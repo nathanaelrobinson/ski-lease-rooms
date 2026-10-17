@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ski Lease Rooms</title>
-<meta name="description" content="Fair weekly room assignment for a ski lease, with a season simulation against first come, first served.">
+<meta name="description" content="MIP bed assignment for a ski lease, with a season simulation against first come.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
   color-scheme: light;
@@ -162,20 +162,35 @@ table.heat td.name { white-space: nowrap; }
 .setting { display: grid; grid-template-columns: 180px 1fr 50px; gap: 8px; align-items: center; margin: 6px 0; }
 .setting input[type="range"] { width: 100%; }
 @media (max-width: 560px) { .setting { grid-template-columns: 1fr 50px; } .setting label { grid-column: 1 / -1; } }
+
+/* Engine view */
+.mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+header .meta { color: var(--text-3); }
+table.metrics td, table.metrics th { padding: 5px 8px; }
+table.metrics tr.group td { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); padding-top: 12px; border-bottom: 0; }
+table.metrics td.better { font-weight: 600; }
+.strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.strip > div { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.strip .k { font-size: 11px; color: var(--text-3); }
+.strip .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.room h4 .occ { float: right; font-weight: 400; color: var(--text-3); font-size: 12px; }
+pre.model { background: var(--surface-2); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 0 0 12px; line-height: 1.6; }
+details summary { cursor: pointer; color: var(--text-2); font-size: 13px; margin: 8px 0; }
+td.pct { text-align: center; font-variant-numeric: tabular-nums; font-size: 12px; border: 2px solid var(--surface); border-radius: 4px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>Ski Lease Rooms</h1>
-    <p>Each weekend, members register by Tuesday evening. Then an optimizer assigns the beds. It gives priority to people who got worse beds in earlier weekends, and it adds a small random term so that ties come out differently. Sign-up time has no effect.</p>
+    <p class="mono meta">MIP bed assignment · HiGHS 1.15.3 (WebAssembly) · balance memory across weekends</p>
   </header>
 
   <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="weekend" aria-selected="true">One weekend</button>
-    <button role="tab" data-tab="season" aria-selected="false">Season simulation</button>
+    <button role="tab" data-tab="weekend" aria-selected="true">Weekend</button>
+    <button role="tab" data-tab="season" aria-selected="false">Season</button>
     <button role="tab" data-tab="setup" aria-selected="false">Setup</button>
-    <button role="tab" data-tab="how" aria-selected="false">How it works</button>
+    <button role="tab" data-tab="model" aria-selected="false">Model</button>
   </nav>
 
   <section class="panel active" id="panel-weekend">
@@ -183,21 +198,21 @@ table.heat td.name { white-space: nowrap; }
       <div class="row">
         <div>
           <h2>Registrations</h2>
-          <p class="sub" id="weekend-sub"></p>
+          <p class="sub mono" id="weekend-sub"></p>
         </div>
         <div class="spacer"></div>
         <div class="seg" id="start-mode">
-          <button data-mode="fresh" aria-pressed="true">Start of season</button>
+          <button data-mode="fresh" aria-pressed="true">Fresh</button>
           <button data-mode="mid" aria-pressed="false">Mid-season</button>
         </div>
       </div>
       <div class="row" style="margin-bottom:12px">
-        <button class="btn" id="btn-random">Random sign-up</button>
-        <button class="btn" id="btn-all-sat">Everyone on Saturday</button>
+        <button class="btn" id="btn-random">Random</button>
+        <button class="btn" id="btn-all-sat">All Sat</button>
         <button class="btn" id="btn-clear">Clear</button>
         <div class="spacer"></div>
-        <span class="status" id="weekend-status"></span>
-        <button class="btn primary" id="btn-assign" disabled>Assign beds</button>
+        <span class="status mono" id="weekend-status"></span>
+        <button class="btn primary" id="btn-assign" disabled>Assign</button>
       </div>
       <div class="scroll"><table id="reg-table"></table></div>
     </div>
@@ -208,12 +223,12 @@ table.heat td.name { white-space: nowrap; }
     <div class="card">
       <div class="row">
         <div>
-          <h2>Season from 7 January to 2 May, 2027</h2>
-          <p class="sub">17 weekends. Both methods use the same random attendance. The first-come method gives people with a flexible schedule an earlier sign-up time on average.</p>
+          <h2>Season · 7 Jan to 2 May 2027</h2>
+          <p class="sub mono">17 weekends · same attendance for both methods</p>
         </div>
         <div class="spacer"></div>
-        <span class="status" id="season-status"></span>
-        <button class="btn primary" id="btn-season">Run season</button>
+        <span class="status mono" id="season-status"></span>
+        <button class="btn primary" id="btn-season">Run</button>
       </div>
     </div>
     <div id="season-result"></div>
@@ -222,37 +237,38 @@ table.heat td.name { white-space: nowrap; }
   <section class="panel" id="panel-setup">
     <div class="card">
       <div class="row">
-        <div><h2>House and people</h2><p class="sub">Changes save in this browser. Export a JSON file to share a setup.</p></div>
+        <h2>Setup</h2>
         <div class="spacer"></div>
         <button class="btn" id="btn-export">Export JSON</button>
         <label class="btn" style="display:inline-block">Import JSON<input type="file" id="file-import" accept="application/json,.json" hidden></label>
-        <button class="btn" id="btn-reset">Reset to sample</button>
+        <button class="btn" id="btn-reset">Reset</button>
       </div>
     </div>
     <div class="card">
-      <h3>Optimizer settings</h3>
+      <h3>Optimizer</h3>
       <div id="settings"></div>
     </div>
     <div class="card">
-      <div class="row"><h3>Rooms and beds</h3><div class="spacer"></div><button class="btn small" id="btn-add-room">Add room</button></div>
-      <p class="sub">Value is the quality of a bed, from 0 to 10. A queen holds one couple or one single. Couples can also take two twins in the same room. A shared living space has no gender matching.</p>
+      <div class="row"><h3>Rooms</h3><div class="spacer"></div><button class="btn small" id="btn-add-room">Add room</button></div>
+      <p class="sub mono">value 0–10 · couples: queen, air queen, twin pair · shared space: no gender rule</p>
       <div id="rooms-editor" class="rooms"></div>
     </div>
     <div class="card">
       <div class="row"><h3>People</h3><div class="spacer"></div><button class="btn small" id="btn-add-person">Add person</button></div>
-      <p class="sub">Attend is the probability that the person comes on a weekend. Usual nights sets which nights they register. Flexible schedule is only used by the first-come method.</p>
+      <p class="sub mono">attend = P(weekend) · flexible = earlier sign-up in first come only</p>
       <div class="scroll"><table id="people-editor"></table></div>
     </div>
   </section>
 
-  <section class="panel" id="panel-how">
-    <div class="card" id="how"></div>
+  <section class="panel" id="panel-model">
+    <div class="card" id="model"></div>
   </section>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/highs@1.15.3/build/highs.js"></script>
 <script src="model.js"></script>
+<script src="outcomes.js"></script>
 <script src="simulate.js"></script>
 <script src="defaults.js"></script>
 <script src="app.js"></script>

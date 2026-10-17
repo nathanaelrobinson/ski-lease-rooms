@@ -7,16 +7,47 @@
 
   const M = window.SkiModel;
   const S = window.SkiSim;
+  const O = window.SkiOutcomes;
   const STORAGE_KEY = 'ski-lease-config-v1';
   const HIGHS_BASE = 'https://cdn.jsdelivr.net/npm/highs@1.15.3/build/';
   const NIGHT_NAMES = ['Thursday', 'Friday', 'Saturday'];
-  const TYPE_LABELS = { queen: 'Queen', twin: 'Twin', bunk_bottom: 'Bottom bunk', bunk_top: 'Top bunk', couch: 'Couch' };
+  const TYPE_LABELS = {
+    queen: 'Queen',
+    twin: 'Twin',
+    bunk_bottom: 'Bottom bunk',
+    bunk_top: 'Top bunk',
+    couch: 'Couch',
+    air_queen: 'Air queen',
+    air_twin: 'Air twin',
+  };
+  /* Labels and directions of the outcome measures. lower = true means that a lower number is better. */
+  const MEASURES = [
+    ['util', 'Bedroom utilization', '%', false],
+    ['singleQueen', 'Single in queen', 'queen-nights', true],
+    ['wastedQueen', 'Wasted queen', 'queen-nights', true],
+    ['heldEmptyQueen', 'Held-empty queen', 'queen-nights', true],
+    ['floorNights', 'Floor nights', 'person-nights', true],
+    ['dominatedFloor', 'Dominated floor', 'person-nights', true],
+    ['priorityInversion', 'Priority inversion', 'pairs', true],
+    ['mixedRoom', 'Mixed-gender room', 'room-nights', true],
+    ['coupleSplit', 'Couple split', 'couple-weekends', true],
+    ['capExcess', 'Over couch cap', 'person-nights', true],
+  ];
+  const INCIDENT_LABELS = {
+    wastedQueen: 'Wasted queen',
+    heldEmptyQueen: 'Held-empty queen',
+    dominatedFloor: 'Dominated floor',
+    priorityInversion: 'Priority inversion',
+    mixedRoom: 'Mixed-gender room',
+    coupleSplit: 'Couple split',
+    capExcess: 'Over couch cap',
+  };
   /* Sequential blue ramp from the chart palette. Step 100 is value 0 and step 700 is value 10. */
   const RAMP = ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281', '#0d366b'];
 
   let highs = null;
   let config = loadConfig();
-  let weekend = { mode: 'fresh', registrations: {}, runs: 0, midBalances: null };
+  let weekend = { mode: 'fresh', registrations: {}, runs: 0, midState: null };
   let season = null;
   const charts = {};
 
@@ -58,7 +89,7 @@
   function configChanged() {
     saveConfig();
     season = null;
-    weekend.midBalances = null;
+    weekend.midState = null;
     const ids = new Set(config.people.map((p) => p.id));
     for (const id of Object.keys(weekend.registrations)) if (!ids.has(id)) delete weekend.registrations[id];
     document.getElementById('season-result').innerHTML = '';
@@ -121,7 +152,7 @@
 
   function loadSolver() {
     const statuses = ['weekend-status', 'season-status'].map((id) => document.getElementById(id));
-    statuses.forEach((el) => (el.textContent = 'Loading the solver…'));
+    statuses.forEach((el) => (el.textContent = 'loading solver…'));
     window
       .Module({ locateFile: (file) => HIGHS_BASE + file })
       .then((h) => {
@@ -133,7 +164,7 @@
         if (document.getElementById('panel-season').classList.contains('active')) runSeason();
       })
       .catch((err) => {
-        statuses.forEach((el) => (el.textContent = `The solver did not load: ${err.message || err}`));
+        statuses.forEach((el) => (el.textContent = `solver load failed: ${err.message || err}`));
       });
   }
 
@@ -158,10 +189,10 @@
 
   /* One weekend */
 
-  function currentBalances() {
-    if (weekend.mode === 'fresh') return {};
-    if (!weekend.midBalances && highs) weekend.midBalances = S.midSeasonBalances(highs, config);
-    return weekend.midBalances || {};
+  function currentState() {
+    if (weekend.mode === 'fresh') return { balances: {}, floorNights: {} };
+    if (!weekend.midState && highs) weekend.midState = S.midSeasonState(highs, config);
+    return weekend.midState || { balances: {}, floorNights: {} };
   }
 
   function weekendLabel() {
@@ -170,29 +201,27 @@
   }
 
   function renderRegistrations() {
-    const balances = currentBalances();
-    const sub = document.getElementById('weekend-sub');
-    sub.textContent =
+    const { balances, floorNights } = currentState();
+    document.getElementById('weekend-sub').textContent =
       weekend.mode === 'fresh'
-        ? `Weekend of ${weekendLabel()}. All balances start at zero, so the random term decides between equal people.`
-        : `Weekend of ${weekendLabel()}. The balances come from a simulation of the first ${S.MID_SEASON_WEEKENDS} weekends with the optimizer.`;
+        ? `${weekendLabel()} · balances = 0`
+        : `${weekendLabel()} · state after ${S.MID_SEASON_WEEKENDS} simulated weekends`;
 
-    const ranked = config.people
-      .map((p) => ({ id: p.id, bal: balances[p.id] || 0 }))
-      .sort((a, b) => a.bal - b.bal);
+    const ranked = config.people.map((p) => ({ id: p.id, bal: balances[p.id] || 0 })).sort((a, b) => a.bal - b.bal);
     const rank = new Map(ranked.map((r, i) => [r.id, i + 1]));
+    const cap = S.capSetting(config.settings);
 
     let html = '<thead><tr><th>Person</th>';
-    for (const n of NIGHT_NAMES) html += `<th class="c">${n.slice(0, 3)}</th>`;
-    html += '<th class="num">Balance</th><th class="num">Priority</th></tr></thead><tbody>';
+    for (const n of M.NIGHTS) html += `<th class="c">${n}</th>`;
+    html += `<th class="num">Balance</th><th class="num">Floor${cap === null ? '' : ` / ${cap}`}</th><th class="num">Rank</th></tr></thead><tbody>`;
     for (const p of config.people) {
       const reg = weekend.registrations[p.id] || [];
       const partner = p.partnerId ? config.people.find((x) => x.id === p.partnerId) : null;
-      html += `<tr><td>${esc(p.name)}${partner ? `<span class="tag">with ${esc(partner.name)}</span>` : ''}</td>`;
+      html += `<tr><td>${esc(p.name)}${partner ? `<span class="tag">+ ${esc(partner.name)}</span>` : ''}</td>`;
       for (let n = 0; n < 3; n++) {
         html += `<td class="c"><input type="checkbox" data-person="${esc(p.id)}" data-night="${n}" ${reg.includes(n) ? 'checked' : ''} aria-label="${esc(p.name)} ${NIGHT_NAMES[n]}"></td>`;
       }
-      html += `<td class="num">${fmt(balances[p.id] || 0)}</td><td class="num muted">${weekend.mode === 'fresh' ? 'equal' : `#${rank.get(p.id)}`}</td></tr>`;
+      html += `<td class="num">${fmt(balances[p.id] || 0)}</td><td class="num">${floorNights[p.id] || 0}</td><td class="num muted">${weekend.mode === 'fresh' ? '–' : rank.get(p.id)}</td></tr>`;
     }
     html += '</tbody>';
     const table = document.getElementById('reg-table');
@@ -239,41 +268,77 @@
   function assignWeekend() {
     if (!highs) return;
     if (Object.keys(weekend.registrations).length === 0) {
-      document.getElementById('weekend-result').innerHTML = '<div class="card"><p class="note">Nobody is registered. Click Random sign-up or tick some nights.</p></div>';
+      document.getElementById('weekend-result').innerHTML = '<div class="card"><p class="note">No registrations.</p></div>';
       return;
     }
     weekend.runs++;
-    const balances = currentBalances();
+    const state = currentState();
+    const couchCap = S.capSetting(config.settings);
     const t0 = performance.now();
     const result = M.solveWeekend(highs, {
       rooms: config.rooms,
       people: config.people,
       registrations: weekend.registrations,
-      balances,
-      settings: config.settings,
+      balances: state.balances,
+      floorNights: state.floorNights,
+      settings: { ...config.settings, couchCap },
       rng: S.rngFromSeed((Number(config.settings.seed) || 1) * 7919 + weekend.runs),
     });
     const ms = performance.now() - t0;
-    renderWeekendResult(result, balances, ms);
+    const outcomes =
+      result.status === 'Optimal'
+        ? O.assessWeekend({ result, rooms: config.rooms, people: config.people, balances: state.balances, floorNights: state.floorNights, couchCap })
+        : null;
+    renderWeekendResult(result, state, outcomes, ms);
   }
 
-  function renderWeekendResult(result, balances, ms) {
+  function measureValue(counts, key) {
+    if (key === 'util') return counts.bedroomNights ? (100 * counts.bedroomOccupied) / counts.bedroomNights : 0;
+    return counts[key];
+  }
+
+  function measureText(counts, key) {
+    const v = measureValue(counts, key);
+    return key === 'util' ? `${v.toFixed(0)}%` : String(v);
+  }
+
+  function incidentRows(incidents, beds, withWeek) {
+    if (incidents.length === 0) return '<p class="sub mono">none</p>';
+    let html = `<div class="scroll"><table class="mono"><thead><tr>${withWeek ? '<th>Weekend</th>' : ''}<th>Night</th><th>Type</th><th>People</th><th>Detail</th></tr></thead><tbody>`;
+    for (const x of incidents) {
+      const detail = String(x.detail || '')
+        .split('+')
+        .map((id) => (beds.has(id) ? beds.get(id).name : (config.rooms.find((r) => r.id === id) || { name: id }).name))
+        .join(' + ');
+      html += `<tr>${withWeek ? `<td>${esc(season.weekends[x.week].label)}</td>` : ''}<td>${x.night === null ? 'all' : M.NIGHTS[x.night]}</td><td>${esc(INCIDENT_LABELS[x.type] || x.type)}</td><td>${esc(x.people.map(personName).join(', '))}</td><td>${esc(detail)}</td></tr>`;
+    }
+    return html + '</tbody></table></div>';
+  }
+
+  function renderWeekendResult(result, state, outcomes, ms) {
     const out = document.getElementById('weekend-result');
     if (result.status !== 'Optimal') {
-      out.innerHTML = `<div class="card"><p class="note">The solver returned the status "${esc(result.status)}".</p></div>`;
+      out.innerHTML = `<div class="card"><p class="note">Solver status: ${esc(result.status)}</p></div>`;
       return;
     }
+    const balances = state.balances;
     const beds = bedInfo();
     const update = M.updateBalances(balances, result, config.rooms);
     const attending = result.parties.flatMap((p) => p.members);
-    const overflow = attending.filter((id) => result.assignment[id] === M.OVERFLOW);
+    const noBed = attending.filter((id) => result.assignment[id] === M.OVERFLOW);
 
-    let html = `<div class="card"><div class="row"><h2>Bed plan</h2><div class="spacer"></div><span class="status">Run ${weekend.runs}. Solved in ${Math.round(ms)} ms. ${attending.length} people.</span><button class="btn small" id="btn-reassign">Assign again</button></div>`;
-    html += '<p class="sub">Each person keeps one bed for all their nights. An italic name shows a bed that a couple holds for a partner who arrives on another night.</p>';
-    if (overflow.length) html += `<p class="note">Not enough beds: ${overflow.map((id) => esc(personName(id))).join(', ')} get an air mattress.</p>`;
-    html += '<div class="rooms">';
+    let html = `<div class="card"><div class="row"><h2>Outcomes</h2><div class="spacer"></div><span class="status mono">run ${weekend.runs} · ${Math.round(ms)} ms · ${attending.length} people · obj ${plain(result.objective, 1)}</span><button class="btn small" id="btn-reassign">Re-run</button></div><div class="strip">`;
+    for (const [key, label] of MEASURES) {
+      html += `<div><div class="k">${label}</div><div class="v">${measureText(outcomes.counts, key)}</div></div>`;
+    }
+    html += '</div>';
+    if (noBed.length) html += `<p class="note">No bed: ${noBed.map((id) => esc(personName(id))).join(', ')}</p>`;
+    html += `<details ${outcomes.incidents.length ? 'open' : ''}><summary>Incidents (${outcomes.incidents.length})</summary>${incidentRows(outcomes.incidents, beds, false)}</details></div>`;
+
+    html += '<div class="card"><h2>Bed plan</h2><p class="sub mono">italic = held for an absent partner · occupied / beds per night</p><div class="rooms">';
     for (const room of config.rooms) {
-      html += `<div class="room"><h4>${esc(room.name)}</h4><div class="bedrow head"><span></span>${M.NIGHTS.map((n) => `<span>${n}</span>`).join('')}</div>`;
+      const occ = outcomes.roomNights[room.id].map((x) => `${x.occupied}/${x.total}`).join(' · ');
+      html += `<div class="room"><h4>${esc(room.name)}<span class="occ mono">${occ}</span></h4><div class="bedrow head"><span></span>${M.NIGHTS.map((n) => `<span>${n}</span>`).join('')}</div>`;
       for (const bed of room.beds) {
         const info = beds.get(bed.id);
         html += `<div class="bedrow"><span class="label">${esc(info.label)} · ${bed.value}</span>`;
@@ -282,7 +347,7 @@
           if (!cell) html += '<span class="slot free">open</span>';
           else if (cell.sleepers.length === 0) {
             const party = result.parties.find((p) => p.id === cell.partyId);
-            html += `<span class="slot held" title="Held for the couple">${esc(party.members.map(personName).join(' & '))}</span>`;
+            html += `<span class="slot held">${esc(party.members.map(personName).join(' & '))}</span>`;
           } else html += `<span class="slot">${esc(cell.sleepers.map(personName).join(' & '))}</span>`;
         }
         html += '</div>';
@@ -291,27 +356,24 @@
     }
     html += '</div></div>';
 
-    /* Open beds for guests */
-    html += '<div class="card"><h3>Open for guests</h3><table><tbody>';
+    html += '<div class="card"><h3>Open for guests</h3><table class="mono"><tbody>';
     for (let n = 0; n < 3; n++) {
       const free = result.freeBeds[n].map((id) => beds.get(id).name);
-      html += `<tr><td style="width:110px">${NIGHT_NAMES[n]}</td><td>${free.length ? esc(free.join('; ')) : '<span class="muted">None</span>'}</td></tr>`;
+      html += `<tr><td style="width:60px">${M.NIGHTS[n]}</td><td class="num" style="width:40px">${free.length}</td><td>${free.length ? esc(free.join(' · ')) : '–'}</td></tr>`;
     }
     html += '</tbody></table></div>';
 
-    /* Reason for each person, in priority order */
     const order = [...attending].sort((a, b) => result.weights[b] - result.weights[a]);
-    html += '<div class="card"><h3>Why each person got their bed</h3><p class="sub">People are in priority order. A lower balance gives a higher weight. The weight multiplies the bed value in the optimizer.</p><div class="scroll"><table><thead><tr><th>#</th><th>Person</th><th class="num">Balance before</th><th class="num">Weight</th><th>Bed</th><th>Nights</th><th class="num">Balance after</th></tr></thead><tbody>';
+    html += '<div class="card"><h3>Priority</h3><div class="scroll"><table><thead><tr><th>#</th><th>Person</th><th class="num">Bal₀</th><th class="num">w</th><th>Bed</th><th class="num">v</th><th>Nights</th><th class="num">Bal₁</th></tr></thead><tbody>';
     order.forEach((id, i) => {
       const party = result.parties.find((p) => p.members.includes(id));
       const bedId = result.assignment[id];
-      const bed = bedId === M.OVERFLOW ? 'Air mattress (0)' : `${beds.get(bedId).name} (${beds.get(bedId).value})`;
-      const partner = party.members.length === 2 ? `<span class="tag">with ${esc(personName(party.members.find((m) => m !== id)))}</span>` : '';
-      html += `<tr><td class="muted">${i + 1}</td><td>${esc(personName(id))}${partner}</td><td class="num">${fmt(balances[id] || 0)}</td><td class="num">${plain(result.weights[id], 2)}</td><td>${esc(bed)}</td><td>${nightsText(party.memberNights[id])}</td><td class="num">${fmt(update.balances[id])}</td></tr>`;
+      const bed = bedId === M.OVERFLOW ? 'No bed' : beds.get(bedId).name;
+      const value = bedId === M.OVERFLOW ? 0 : beds.get(bedId).value;
+      const partner = party.members.length === 2 ? `<span class="tag">+ ${esc(personName(party.members.find((m) => m !== id)))}</span>` : '';
+      html += `<tr><td class="muted">${i + 1}</td><td>${esc(personName(id))}${partner}</td><td class="num">${fmt(balances[id] || 0)}</td><td class="num">${plain(result.weights[id], 2)}</td><td>${esc(bed)}</td><td class="num">${value}</td><td class="mono">${nightsText(party.memberNights[id])}</td><td class="num">${fmt(update.balances[id])}</td></tr>`;
     });
-    html += '</tbody></table></div>';
-    if (result.mixedRoomNights) html += `<p class="sub" style="margin-top:8px">${result.mixedRoomNights} room-night(s) have singles of two genders, because no better plan was possible.</p>`;
-    html += '</div>';
+    html += '</tbody></table></div></div>';
     out.innerHTML = html;
     document.getElementById('btn-reassign').addEventListener('click', assignWeekend);
   }
@@ -321,11 +383,11 @@
   function runSeason() {
     if (!highs) return;
     const status = document.getElementById('season-status');
-    status.textContent = 'Running 17 weekends…';
+    status.textContent = 'running…';
     setTimeout(() => {
       const t0 = performance.now();
       season = S.runSeason(highs, config);
-      status.textContent = `Done in ${Math.round(performance.now() - t0)} ms. Seed ${config.settings.seed}.`;
+      status.textContent = `${Math.round(performance.now() - t0)} ms · seed ${config.settings.seed}`;
       renderSeason();
     }, 20);
   }
@@ -335,34 +397,76 @@
     const o = season.optimizer.metrics;
     const f = season.firstCome.metrics;
     const gap = (m, a, b) => (m[a] === null || m[b] === null ? null : m[a] - m[b]);
-    const tile = (k, vo, vf, d) =>
-      `<div class="tile"><div class="k">${k}</div><div class="v">${vo} <span class="vs">optimizer</span></div><div class="v" style="font-size:16px">${vf} <span class="vs">first come</span></div><div class="d">${d}</div></div>`;
+    const maxFloor = (m) => Math.max(0, ...Object.values(m.perPerson).map((x) => x.floorNights));
+    const cap = S.capSetting(config.settings);
 
-    let html = '<div class="card"><h2>Summary</h2><p class="sub">Advantage is the bed value that a person got above the average bed value of the same night, averaged over their nights. A fair rotation keeps every advantage close to 0.</p><div class="tiles">';
-    html += tile('Standard deviation of advantage', plain(o.stdev, 2), plain(f.stdev, 2), 'Points. Over all person-nights.');
-    html += tile('Highest minus lowest advantage', plain(o.spread, 2), plain(f.spread, 2), `Points. People with ${o.minNights} or more nights.`);
-    html += tile('Flexible singles minus other singles', fmt(gap(o, 'flexibleSinglesAvg', 'otherSinglesAvg'), 2), fmt(gap(f, 'flexibleSinglesAvg', 'otherSinglesAvg'), 2), 'Points of advantage per night. This shows the sign-up bias.');
-    html += tile('Couples minus singles', fmt(gap(o, 'couplesAvg', 'singlesAvg'), 2), fmt(gap(f, 'couplesAvg', 'singlesAvg'), 2), 'Points of advantage per night. Couples can only use queens and twin pairs.');
-    html += tile('Couch and air-mattress nights', `${o.couchNights + o.overflowNights}`, `${f.couchNights + f.overflowNights}`, 'Person-nights in the season.');
-    html += '</div><p class="sub" style="margin:12px 0 0">The optimizer can use the couch more often, for two reasons. It avoids rooms with singles of two genders, and the first-come method ignores gender. A person also keeps one bed for the stay, so a bed that is free on one night can be held for another night.</p></div>';
+    /* Each row: label, optimizer value, first-come value, unit, and true if a lower number is better. */
+    const rows = [
+      ['Fairness'],
+      ['σ advantage', o.stdev, f.stdev, 'points / night', true, 2],
+      ['Advantage range', o.spread, f.spread, `points, ≥ ${o.minNights} nights`, true, 2],
+      ['Flexible − other singles', gap(o, 'flexibleSinglesAvg', 'otherSinglesAvg'), gap(f, 'flexibleSinglesAvg', 'otherSinglesAvg'), 'points / night', 'abs', 2],
+      ['Couples − singles', gap(o, 'couplesAvg', 'singlesAvg'), gap(f, 'couplesAvg', 'singlesAvg'), 'points / night', 'abs', 2],
+      ['Utilization'],
+      ...MEASURES.slice(0, 4).map(([k, label, unit, lower]) => [label, measureValue(o.outcomes, k), measureValue(f.outcomes, k), unit, lower, k === 'util' ? 1 : 0]),
+      ['Poor assignments'],
+      ...MEASURES.slice(4).map(([k, label, unit, lower]) => [label, measureValue(o.outcomes, k), measureValue(f.outcomes, k), unit, lower, 0]),
+      ['Max floor nights, one person', maxFloor(o), maxFloor(f), cap === null ? 'person-nights' : `person-nights, cap ${cap}`, true, 0],
+    ];
+    let html = '<div class="card"><h2>Metrics</h2><p class="sub mono">advantage = (bed value − nightly mean) / nights · bold = better · cap applies to the optimizer only</p><div class="scroll"><table class="metrics"><thead><tr><th>Measure</th><th class="num">Optimizer</th><th class="num">First come</th><th>Unit</th></tr></thead><tbody>';
+    for (const [label, vo, vf, unit, lower, digits] of rows) {
+      if (vo === undefined) {
+        html += `<tr class="group"><td colspan="4">${label}</td></tr>`;
+        continue;
+      }
+      const score = (v) => (lower === 'abs' ? Math.abs(v) : v);
+      const better = vo === vf ? null : lower ? (score(vo) < score(vf) ? 'o' : 'f') : vo > vf ? 'o' : 'f';
+      const show = (v) => (digits === 2 && lower === 'abs' ? fmt(v, 2) : plain(v, digits)) + (unit === '%' ? '%' : '');
+      html += `<tr><td>${label}</td><td class="num ${better === 'o' ? 'better' : ''}">${show(vo)}</td><td class="num ${better === 'f' ? 'better' : ''}">${show(vf)}</td><td class="muted mono">${unit === '%' ? 'bedroom bed-nights' : unit}</td></tr>`;
+    }
+    html += '</tbody></table></div></div>';
 
-    html += `<div class="card"><h2>Running Balance by Person and Weekend</h2><p class="sub">One line for each person. Balance in bed value points, after each weekend. Hover a line to see the person.</p>
-      <div class="legend"><span style="--sw:var(--series-1)">Member of a couple</span><span style="--sw:var(--series-2)">Single</span></div>
+    html += '<div class="card"><h2>Room Utilization by Night</h2><p class="sub mono">occupied bed-nights / available bed-nights, all 17 weekends</p><div class="two">';
+    for (const [m, title] of [['optimizer', 'Optimizer'], ['firstCome', 'First come']]) {
+      html += `<div><h3>${title}</h3><table class="mono"><thead><tr><th>Room</th>${M.NIGHTS.map((n) => `<th class="c">${n}</th>`).join('')}</tr></thead><tbody>`;
+      for (const room of config.rooms) {
+        html += `<tr><td>${esc(room.name)}</td>`;
+        for (const x of season[m].metrics.roomNights[room.id]) {
+          const pct = x.total ? (100 * x.occupied) / x.total : 0;
+          const idx = Math.round((pct / 100) * (RAMP.length - 1));
+          html += `<td class="pct" style="background:${RAMP[idx]};color:${idx >= 6 ? '#ffffff' : '#0b0b0b'}">${pct.toFixed(0)}%</td>`;
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+    html += '</div></div>';
+
+    html += `<div class="card"><h2>Running Balance by Person and Weekend</h2><p class="sub mono">bed value points after each weekend · hover for the person</p>
+      <div class="legend"><span style="--sw:var(--series-1)">Couple member</span><span style="--sw:var(--series-2)">Single</span></div>
       <div class="two"><div><h3>Optimizer</h3><div class="chart-box" style="height:300px"><canvas id="ch-bal-o"></canvas></div></div>
-      <div><h3>First come, first served</h3><div class="chart-box" style="height:300px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
+      <div><h3>First come</h3><div class="chart-box" style="height:300px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><h2>Advantage per Night by Person</h2><p class="sub">Bed value minus the nightly average, averaged over the nights of each person, in points. The number after each name is the nights stayed. A flag (F) shows a flexible schedule.</p>
+    html += `<div class="card"><h2>Advantage per Night by Person</h2><p class="sub mono">(bed value − nightly mean) / nights · label: name (F = flexible) · nights</p>
       <div class="legend"><span style="--sw:var(--series-1)">Optimizer</span><span style="--sw:var(--series-2)">First come</span></div>
       <div class="chart-box" style="height:${config.people.length * 34 + 60}px"><canvas id="ch-adv"></canvas></div></div>`;
 
-    html += `<div class="card"><h2>Couch and Air-Mattress Nights by Person</h2><p class="sub">Person-nights in the season.</p>
+    html += `<div class="card"><h2>Floor Nights by Person</h2><p class="sub mono">couch + air mattress + no bed · person-nights</p>
       <div class="legend"><span style="--sw:var(--series-1)">Optimizer</span><span style="--sw:var(--series-2)">First come</span></div>
-      <div class="chart-box" style="height:${config.people.length * 30 + 60}px"><canvas id="ch-couch"></canvas></div></div>`;
+      <div class="chart-box" style="height:${config.people.length * 30 + 60}px"><canvas id="ch-floor"></canvas></div></div>`;
 
-    html += `<div class="card"><div class="row"><div><h2>Bed Value by Person and Weekend</h2><p class="sub">Average bed value over the nights of each weekend. An empty cell shows that the person did not attend. Hover a cell to see the bed.</p></div><div class="spacer"></div>
+    html += `<div class="card"><div class="row"><div><h2>Bed Value by Person and Weekend</h2><p class="sub mono">mean bed value over the nights of the weekend · hover for the bed</p></div><div class="spacer"></div>
       <div class="seg" id="grid-method"><button data-m="optimizer" aria-pressed="true">Optimizer</button><button data-m="firstCome" aria-pressed="false">First come</button></div></div>
       <div class="scroll" id="grid"></div>
-      <div class="scale">0 ${RAMP.filter((_, i) => i % 2 === 0).map((c) => `<i style="background:${c}"></i>`).join('')} 10 points</div></div>`;
+      <div class="scale">0 ${RAMP.filter((_, i) => i % 2 === 0).map((c) => `<i style="background:${c}"></i>`).join('')} 10</div></div>`;
+
+    const beds = bedInfo();
+    html += '<div class="card"><h2>Incidents</h2>';
+    for (const [m, title] of [['optimizer', 'Optimizer'], ['firstCome', 'First come']]) {
+      const list = season[m].metrics.incidents;
+      html += `<details><summary>${title} (${list.length})</summary>${incidentRows(list, beds, true)}</details>`;
+    }
+    html += '</div>';
 
     out.innerHTML = html;
     drawSeasonCharts();
@@ -394,7 +498,7 @@
         const value = bedId === M.OVERFLOW ? 0 : beds.get(bedId).value;
         const idx = Math.max(0, Math.min(RAMP.length - 1, Math.round((value / 10) * (RAMP.length - 1))));
         const ink = idx >= 6 ? '#ffffff' : '#0b0b0b';
-        const title = `${p.name}: ${bedId === M.OVERFLOW ? 'air mattress' : beds.get(bedId).name}, ${nightsText(party.memberNights[p.id])}`;
+        const title = `${p.name}: ${bedId === M.OVERFLOW ? 'no bed' : beds.get(bedId).name}, ${nightsText(party.memberNights[p.id])}`;
         html += `<td class="cell" style="background:${RAMP[idx]};color:${ink}" title="${esc(title)}">${value}</td>`;
       });
       html += `<td class="num">${fmt(run.metrics.perPerson[p.id].advantage, 2)}</td></tr>`;
@@ -526,11 +630,7 @@
       });
     };
     charts.adv = hbar('ch-adv', 'advantage', 2, 'Advantage per night (bed value points)');
-    const couchKey = 'couchPlusOverflow';
-    for (const m of ['optimizer', 'firstCome']) {
-      for (const pm of Object.values(season[m].metrics.perPerson)) pm[couchKey] = pm.couchNights + pm.overflowNights;
-    }
-    charts.couch = hbar('ch-couch', couchKey, 0, 'Couch and air-mattress nights (count)');
+    charts.floor = hbar('ch-floor', 'floorNights', 0, 'Floor nights (person-nights)');
   }
 
   /* Setup */
@@ -538,16 +638,17 @@
   function renderSettings() {
     const s = config.settings;
     const rows = [
-      ['strength', 'Rotation strength', 0, 4, 0.5, 'How hard the optimizer favors people with low balances. 0 turns rotation off.'],
-      ['noise', 'Randomness', 0, 5, 0.5, 'Size of the random term, in bed value points.'],
-      ['genderPenalty', 'Gender matching', 0, 10, 1, 'Penalty for a shared room with singles of two genders on a night.'],
+      ['strength', 'Rotation strength s', 0, 4, 0.5, 'w = exp(−s · balance / 6). 0 = no rotation.'],
+      ['noise', 'Noise ε max', 0, 5, 0.5, 'ε ~ U(0, max), bed value points.'],
+      ['genderPenalty', 'Gender penalty G', 0, 10, 1, 'Cost per mixed-gender room-night.'],
     ];
     let html = '';
     for (const [key, label, min, max, step, help] of rows) {
-      html += `<div class="setting"><label for="set-${key}" title="${esc(help)}">${label}</label><input type="range" id="set-${key}" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${s[key]}"><span class="num" id="val-${key}">${s[key]}</span></div>`;
+      html += `<div class="setting"><label for="set-${key}" title="${esc(help)}">${label}</label><input type="range" id="set-${key}" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${s[key]}"><span class="num mono" id="val-${key}">${s[key]}</span></div>`;
     }
-    html += `<div class="setting"><label for="set-seed">Random seed</label><input type="number" id="set-seed" value="${s.seed}" style="width:120px"><span></span></div>`;
-    html += '<p class="sub">The seed fixes the random attendance and the random term, so the same seed gives the same season.</p>';
+    const cap = S.capSetting(s);
+    html += `<div class="setting"><label for="set-cap" title="Floor = couch, air mattress, or no bed. Blank = off.">Couch cap (floor nights / season)</label><input type="number" id="set-cap" min="0" step="1" value="${cap === null ? '' : cap}" placeholder="off" style="width:90px"><span></span></div>`;
+    html += `<div class="setting"><label for="set-seed">Seed</label><input type="number" id="set-seed" value="${s.seed}" style="width:120px"><span></span></div>`;
     const el = document.getElementById('settings');
     el.innerHTML = html;
     for (const input of el.querySelectorAll('input[type="range"]')) {
@@ -557,6 +658,11 @@
       });
       input.addEventListener('change', configChanged);
     }
+    document.getElementById('set-cap').addEventListener('change', (e) => {
+      const v = e.target.value.trim();
+      config.settings.couchCap = v === '' ? null : Math.max(0, Math.floor(Number(v)) || 0);
+      configChanged();
+    });
     document.getElementById('set-seed').addEventListener('change', (e) => {
       config.settings.seed = Math.floor(Number(e.target.value)) || 1;
       configChanged();
@@ -618,7 +724,7 @@
 
   function renderPeopleEditor() {
     const el = document.getElementById('people-editor');
-    let html = '<thead><tr><th>Name</th><th>Gender</th><th>Partner</th><th>Attend %</th><th>Usual nights</th><th class="c">Flexible schedule</th><th></th></tr></thead><tbody>';
+    let html = '<thead><tr><th>Name</th><th>Gender</th><th>Partner</th><th>Attend %</th><th>Usual nights</th><th class="c">Flexible</th><th></th></tr></thead><tbody>';
     config.people.forEach((p, i) => {
       html += `<tr><td><input data-i="${i}" data-f="name" value="${esc(p.name)}" style="width:120px"></td>
         <td><select data-i="${i}" data-f="gender">${['M', 'F', 'X'].map((g) => `<option ${p.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></td>
@@ -697,7 +803,7 @@
       e.target.value = '';
     });
     document.getElementById('btn-reset').addEventListener('click', () => {
-      if (!confirm('Replace the rooms, people, and settings with the sample?')) return;
+      if (!confirm('Replace the setup with the sample?')) return;
       config = defaultConfig();
       weekend.registrations = {};
       configChanged();
@@ -713,18 +819,50 @@
 
   /* How it works */
 
-  function renderHow() {
-    document.getElementById('how').innerHTML = `
-      <h2>How the assignment works</h2>
-      <p>Members register for Thursday, Friday, or Saturday night by Tuesday evening. Then the optimizer assigns all beds at the same time, so the sign-up time has no effect.</p>
-      <h3>Rules</h3>
-      <p>Each person keeps one bed for all the nights of a stay. A bed holds one party on a night. A couple takes a queen, or two twins in the same room. If partners come on different nights, the couple holds its bed for all the nights that either partner stays. If only one partner comes, that person registers as a single. Singles can share twin and bunk rooms, and the optimizer tries to keep shared rooms to one gender. If more people come than there are beds, the last people get an air mattress. After the assignment, the free beds on each night are open for guests.</p>
-      <h3>Fairness</h3>
-      <p>Each person has a balance. On each night, the optimizer calculates the average bed value of all people in the house. Each person's balance then goes up by the value of their bed minus that average. A balance above 0 means that the person got better beds than average so far. The balances on each night add up to 0, so a person on a crowded Saturday is compared with the other people on that Saturday, not with a quiet Thursday.</p>
-      <h3>Priority and randomness</h3>
-      <p>Each person gets a weight of exp(−strength × balance ÷ 6). A person 3 points behind has about 2.7 times the weight of a person at 0, with the default strength of 2. The optimizer is a mixed-integer program. It finds the plan with the highest sum of weight × bed value over all person-nights, under the rules above. A small random term, scaled by each weight, makes equal choices come out differently each week.</p>
-      <h3>Solver</h3>
-      <p>The page uses HiGHS, an open-source solver, compiled to WebAssembly. It runs in your browser. No data leaves the page.</p>`;
+  function renderModel() {
+    document.getElementById('model').innerHTML = `
+      <h2>Model</h2>
+      <h3>Sets</h3>
+<pre class="model mono">N = {Thu, Fri, Sat}
+P = parties: a single, or two partners who both registered (nights = union)
+O(p) = options of party p
+  single: any bed | no bed
+  couple: queen | air queen | 2 twins in one room | no bed
+floor = couch, air twin, air queen, no bed</pre>
+      <h3>Variables</h3>
+<pre class="model mono">y[p,o] ∈ {0,1}            party p takes option o for all its nights
+gM[r,n], gF[r,n], z[r,n] ∈ {0,1}   room r on night n has a male / female single / both</pre>
+      <h3>Objective</h3>
+<pre class="model mono">max  Σ y[p,o] · ( Σ_m n_m · [ w_m·(v_o,m + ε_o) + 0.1·v_o,m − 4·floor_o,m ]
+                 + 2·n_p·queen_o
+                 − 300·capExcess_o
+                 − 1000·nobed_o )
+     − G · Σ z[r,n]
+
+w_m = clamp( exp(−s · bal_m / 6), 1/50, 50 )
+ε_o ~ U(0, ε max)</pre>
+      <h3>Constraints</h3>
+<pre class="model mono">Σ_o y[p,o] = 1                          ∀ p
+Σ { y[p,o] : b ∈ o, n ∈ nights(p) } ≤ 1   ∀ b, n
+y[p,o] ≤ gM[r,n]   (male single in r on n),   same for gF
+gM[r,n] + gF[r,n] − z[r,n] ≤ 1          ∀ bedroom r, n</pre>
+      <h3>Balance update</h3>
+<pre class="model mono">bal_m += v_m,n − mean_n(v)    for each night n of person m   (no bed: v = 0)
+Σ_m Δbal_m,n = 0</pre>
+      <h3>Outcome measures</h3>
+<pre class="model mono">Bedroom utilization  occupied / available bed-nights, real beds in bedrooms
+Single in queen      queen-night with one sleeper
+Wasted queen         single in queen  ∧  couple in 2 beds  ∧  someone on floor, same night
+Held-empty queen     queen held for a partner who is absent that night
+Dominated floor      floor while a better option was free on all party nights (gender-safe)
+Priority inversion   same-gender singles, same nights, Δbal > 1, higher balance has better bed
+Mixed-gender room    bedroom-night with singles of two genders
+Couple split         couple in 2 beds outside one twin room (first come only)
+Over couch cap       floor nights above the cap</pre>
+      <h3>Baseline: first come</h3>
+<pre class="model mono">sign-up time t ~ Exp(1) · (0.35 if flexible)
+in order of t: take the free option with the highest value per person
+couple with no couple option: 2 best free beds (split)</pre>`;
   }
 
   /* Start */
@@ -733,7 +871,7 @@
     setupTabs();
     setupWeekend();
     setupSetup();
-    renderHow();
+    renderModel();
     renderRegistrations();
     document.getElementById('btn-season').disabled = true;
     document.getElementById('btn-season').addEventListener('click', runSeason);

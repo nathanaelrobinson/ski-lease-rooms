@@ -3,9 +3,9 @@
  * The file works in the browser (global SkiSim) and in Node (module.exports).
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./model.js'));
-  else root.SkiSim = factory(root.SkiModel);
-})(typeof self !== 'undefined' ? self : this, function (Model) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./model.js'), require('./outcomes.js'));
+  else root.SkiSim = factory(root.SkiModel, root.SkiOutcomes);
+})(typeof self !== 'undefined' ? self : this, function (Model, Outcomes) {
   'use strict';
 
   const PATTERNS = {
@@ -153,17 +153,45 @@
    */
   function runMethod(highs, config, attendance, method, seed) {
     const rng = rngFromSeed(seed);
+    const bedById = new Map(Model.flattenBeds(config.rooms).map((b) => [b.id, b]));
+    const couchCap = capSetting(config.settings);
     let balances = {};
+    let floorNights = {};
     const weeks = [];
     for (const registrations of attendance) {
-      const input = { rooms: config.rooms, people: config.people, registrations, balances, settings: config.settings, rng };
-      const before = balances;
+      const input = {
+        rooms: config.rooms,
+        people: config.people,
+        registrations,
+        balances,
+        floorNights,
+        settings: { ...config.settings, couchCap: method === 'optimizer' ? couchCap : null },
+        rng,
+      };
       const result = method === 'optimizer' ? Model.solveWeekend(highs, input) : firstComeWeekend(input);
+      const outcomes = Outcomes.assessWeekend({ result, rooms: config.rooms, people: config.people, balances, floorNights, couchCap });
       const update = Model.updateBalances(balances, result, config.rooms);
+      weeks.push({ registrations, result, outcomes, nightly: update.nightly, balancesBefore: balances, balancesAfter: update.balances });
       balances = update.balances;
-      weeks.push({ registrations, result, nightly: update.nightly, balancesBefore: before, balancesAfter: balances });
+      floorNights = addFloorNights(floorNights, result, bedById);
     }
-    return { method, weeks, balances };
+    return { method, weeks, balances, floorNights };
+  }
+
+  /* Return the couch cap as a number, or null if the cap is off. */
+  function capSetting(settings) {
+    const cap = settings.couchCap;
+    return cap === null || cap === undefined || cap === '' || Number.isNaN(Number(cap)) ? null : Number(cap);
+  }
+
+  function addFloorNights(floorNights, result, bedById) {
+    const next = { ...floorNights };
+    for (const party of result.parties) {
+      for (const m of party.members) {
+        if (Model.isFloor(result.assignment[m], bedById)) next[m] = (next[m] || 0) + party.memberNights[m].length;
+      }
+    }
+    return next;
   }
 
   function drawSeasonAttendance(people, seed, count) {
@@ -187,11 +215,12 @@
     };
   }
 
-  /* Run the optimizer on the first MID_SEASON_WEEKENDS weekends and return the balances. */
-  function midSeasonBalances(highs, config) {
+  /* Run the optimizer on the first MID_SEASON_WEEKENDS weekends. Return the balances and the floor nights. */
+  function midSeasonState(highs, config) {
     const seed = Number(config.settings.seed) || 1;
     const attendance = drawSeasonAttendance(config.people, seed, MID_SEASON_WEEKENDS);
-    return runMethod(highs, config, attendance, 'optimizer', seed + 1).balances;
+    const run = runMethod(highs, config, attendance, 'optimizer', seed + 1);
+    return { balances: run.balances, floorNights: run.floorNights };
   }
 
   /*
@@ -242,8 +271,13 @@
       totalNights += m.nights;
       sumSquares += m.nights * m.advantage ** 2;
     }
+    const summed = Outcomes.sumOutcomes(run.weeks.map((w) => w.outcomes), config.rooms);
+    for (const p of config.people) perPerson[p.id].floorNights = run.floorNights[p.id] || 0;
     return {
       perPerson,
+      outcomes: summed.counts,
+      roomNights: summed.roomNights,
+      incidents: run.weeks.flatMap((w, wi) => w.outcomes.incidents.map((x) => ({ ...x, week: wi }))),
       stdev: totalNights ? Math.sqrt(sumSquares / totalNights) : 0,
       spread: avgs.length ? Math.max(...avgs) - Math.min(...avgs) : 0,
       couchNights: Object.values(perPerson).reduce((s, m) => s + m.couchNights, 0),
@@ -269,7 +303,8 @@
     firstComeWeekend,
     runMethod,
     runSeason,
-    midSeasonBalances,
+    midSeasonState,
+    capSetting,
     metrics,
   };
 });

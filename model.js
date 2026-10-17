@@ -12,6 +12,16 @@
   const NIGHTS = ['Thu', 'Fri', 'Sat'];
   const OVERFLOW = null;
   const OVERFLOW_PENALTY = 1000;
+  const CAP_PENALTY = 300;
+  /*
+   * Each floor night costs FLOOR_PENALTY points, independent of the weight.
+   * Without this cost, a person with a low weight can go to the couch while a bed is free.
+   */
+  const FLOOR_PENALTY = 4;
+  /* A couple can share a bed of these types. */
+  const SHARED_TYPES = new Set(['queen', 'air_queen']);
+  /* A night in a bed of these types, or in no bed, counts toward the couch cap. */
+  const FLOOR_TYPES = new Set(['couch', 'air_twin', 'air_queen']);
   const BASE_WEIGHT = 0.1;
 
   const DEFAULT_SETTINGS = {
@@ -19,6 +29,7 @@
     noise: 1.5,
     genderPenalty: 3,
     coupleBonus: 2,
+    couchCap: null,
   };
 
   /* Make one flat list of beds. Each bed keeps the data of its room. */
@@ -77,7 +88,7 @@
 
   /*
    * List the placement options of a party.
-   * A single can take any bed. A couple can take a queen or two twins in the same room.
+   * A single can take any bed. A couple can take a queen, an air queen, or two twins in the same room.
    * Every party also has an overflow option that uses no bed.
    */
   function buildOptions(party, beds) {
@@ -88,7 +99,9 @@
     } else {
       const [a, b] = party.members;
       for (const bed of beds) {
-        if (bed.type === 'queen') options.push({ beds: [bed.id], assign: { [a]: bed.id, [b]: bed.id }, queen: true });
+        if (SHARED_TYPES.has(bed.type)) {
+          options.push({ beds: [bed.id], assign: { [a]: bed.id, [b]: bed.id }, queen: bed.type === 'queen' });
+        }
       }
       const twinsByRoom = new Map();
       for (const bed of beds) {
@@ -147,6 +160,7 @@
     const settings = { ...DEFAULT_SETTINGS, ...(input.settings || {}) };
     const rng = input.rng || Math.random;
     const balances = input.balances || {};
+    const floorNights = input.floorNights || {};
     const beds = flattenBeds(input.rooms);
     const bedById = new Map(beds.map((b) => [b.id, b]));
     const people = input.people;
@@ -174,6 +188,10 @@
           score += (weights[m] * (value + jitter) + BASE_WEIGHT * value) * n;
         }
         if (option.queen) score += settings.coupleBonus * party.nights.length;
+        for (const m of party.members) {
+          if (isFloor(option.assign[m], bedById)) score -= FLOOR_PENALTY * party.memberNights[m].length;
+        }
+        score -= CAP_PENALTY * capExcess(party, option, floorNights, settings.couchCap, bedById);
         if (option.overflow) score -= OVERFLOW_PENALTY * personNights;
         vars.push({ name: `y${vars.length}`, partyIndex: pi, option, score });
       }
@@ -264,6 +282,27 @@
     };
   }
 
+  /* Return true if a bed id is a floor bed or no bed. */
+  function isFloor(bedId, bedById) {
+    return bedId === OVERFLOW || FLOOR_TYPES.has(bedById.get(bedId).type);
+  }
+
+  /*
+   * Count the floor nights of an option that go above the couch cap.
+   * floorNights holds the floor nights of each person before this weekend. A cap of null turns the cap off.
+   */
+  function capExcess(party, option, floorNights, cap, bedById) {
+    if (cap === null || cap === undefined || cap === '') return 0;
+    let excess = 0;
+    for (const m of party.members) {
+      if (!isFloor(option.assign[m], bedById)) continue;
+      const used = floorNights[m] || 0;
+      const added = party.memberNights[m].length;
+      excess += Math.max(0, used + added - cap) - Math.max(0, used - cap);
+    }
+    return excess;
+  }
+
   function emptyResult() {
     return { assignment: {}, plan: NIGHTS.map(() => ({})), freeBeds: NIGHTS.map(() => []) };
   }
@@ -324,6 +363,9 @@
   return {
     NIGHTS,
     OVERFLOW,
+    SHARED_TYPES,
+    FLOOR_TYPES,
+    isFloor,
     DEFAULT_SETTINGS,
     flattenBeds,
     buildParties,

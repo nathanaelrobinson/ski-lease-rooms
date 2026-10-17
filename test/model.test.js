@@ -110,3 +110,51 @@ test('over a season the optimizer has a smaller deviation of advantage than firs
     assert.ok(o.stdev < f.stdev, `seed ${seed}: ${o.stdev} >= ${f.stdev}`);
   }
 });
+
+const Outcomes = require('../outcomes.js');
+
+test('a couple can take an air queen', () => {
+  const rooms = [{ id: 'den', name: 'Den', beds: [{ id: 'den-aq', type: 'air_queen', value: 1 }, { id: 'den-b', type: 'bunk_bottom', value: 4 }] }];
+  const result = Model.solveWeekend(highs, { rooms, people: config.people, registrations: { alex: [2], blair: [2] }, rng: Sim.rngFromSeed(10) });
+  assert.strictEqual(result.assignment.alex, 'den-aq');
+  assert.strictEqual(result.assignment.blair, 'den-aq');
+});
+
+test('the couch cap moves a person off the couch', () => {
+  const rooms = [{ id: 'r', name: 'R', common: true, beds: [{ id: 'bunk', type: 'bunk_top', value: 3 }, { id: 'couch', type: 'couch', value: 2 }] }];
+  const reg = { ivan: [2], kai: [2] };
+  /* Without the cap, Ivan (low balance) gets the bunk and Kai gets the couch. */
+  const base = { rooms, people: config.people, registrations: reg, balances: { ivan: -5, kai: 5 }, rng: Sim.rngFromSeed(11) };
+  assert.strictEqual(Model.solveWeekend(highs, { ...base, settings: { noise: 0 } }).assignment.kai, 'couch');
+  /* With a cap of 2 and Kai at 2 floor nights, Kai gets the bunk. */
+  const capped = Model.solveWeekend(highs, { ...base, floorNights: { kai: 2 }, settings: { noise: 0, couchCap: 2 } });
+  assert.strictEqual(capped.assignment.kai, 'bunk');
+});
+
+test('the outcomes count a wasted queen and a priority inversion', () => {
+  const rooms = Defaults.rooms;
+  const beds = Model.flattenBeds(rooms);
+  const parties = Model.buildParties(config.people, { ivan: [2], kai: [2], alex: [2], blair: [2], pia: [2] });
+  const pick = (party) => {
+    if (party.members.includes('ivan')) return { beds: ['primary-q'], assign: { ivan: 'primary-q' } };
+    if (party.members.includes('pia')) return { beds: ['couch-1'], assign: { pia: 'couch-1' } };
+    if (party.members.includes('kai')) return { beds: ['bunk-1t'], assign: { kai: 'bunk-1t' } };
+    return { beds: ['twin-1', 'twin-2'], assign: { alex: 'twin-1', blair: 'twin-2' } };
+  };
+  const result = Model.finishResult(parties, parties.map(pick), beds);
+  const o = Outcomes.assessWeekend({ result, rooms, people: config.people, balances: { ivan: 5, kai: -5 } });
+  assert.strictEqual(o.counts.singleQueen, 1);
+  assert.strictEqual(o.counts.wastedQueen, 1);
+  assert.strictEqual(o.counts.priorityInversion, 1);
+  /* The Loft is empty, so the couch night of Pia is dominated. */
+  assert.strictEqual(o.counts.dominatedFloor, 1);
+});
+
+test('the outcomes count a dominated floor night', () => {
+  const parties = Model.buildParties(config.people, { kai: [1, 2] });
+  const result = Model.finishResult(parties, [{ beds: ['couch-1'], assign: { kai: 'couch-1' } }], beds);
+  const o = Outcomes.assessWeekend({ result, rooms: config.rooms, people: config.people, couchCap: 1 });
+  assert.strictEqual(o.counts.floorNights, 2);
+  assert.strictEqual(o.counts.dominatedFloor, 2);
+  assert.strictEqual(o.counts.capExcess, 1);
+});

@@ -13,10 +13,11 @@ The demo is a static web page on GitHub Pages. It simulates a season and a singl
 1. Each weekend has three nights: Thursday, Friday, and Saturday. The season runs from Thursday 7 January to Sunday 2 May, 2027 (17 weekends).
 2. A person keeps one bed for all the nights of a stay. Nobody moves during a stay.
 3. A bed holds one party on a night. A party is a single, or two linked partners who both registered.
-4. A couple takes a queen, or two twins in the same room. A couple never takes a bunk or a couch.
+4. A couple takes a queen, an air queen, or two twins in the same room. A couple never takes a bunk or a couch.
 5. A couple holds its spot for every night that either partner stays. If only one partner registers, that person is a single for the weekend.
 6. Singles can share twin and bunk rooms. The model applies a penalty for each shared room on each night with mixed genders. This is a preference, not a rule.
-7. Every party has an overflow option (an air mattress) with a large penalty. The model always has a solution.
+7. Every party has a no-bed option with a large penalty. The model always has a solution.
+9. Couch cap (optimizer only): a floor night is a night on a couch, an air twin, an air queen, or no bed. Each floor night above the cap for the season costs 300 points. A blank cap turns the rule off.
 8. After assignment, the page shows the free beds on each night as open for guests.
 
 ## Fairness
@@ -33,6 +34,20 @@ The model is a mixed-integer program that HiGHS solves in the browser.
 - Objective (maximize): the sum of bed value times priority weight, over each person and each night. The objective also adds a random term and a bonus for couples in queens. It subtracts the gender penalty and the overflow penalty.
 - Priority weight: `exp(-strength * balance / 6)`, limited to the range from 1/50 to 50. The weight is absolute. A first version used a weight relative to the lowest and highest balance, but its push was too weak. Tests showed that it gave a larger spread than first come.
 - The random term and the base term: each person-night adds `weight * (value + jitter) + 0.1 * value`. The jitter is uniform in `[0, noise]`. The scale by weight prevents a move to a worse bed type.
+
+- Floor penalty: each floor night costs 4 points, independent of the weight. Tests showed that without it, people with a low weight went to the couch while a bed was free.
+
+## Outcome measures
+
+`outcomes.js` measures each weekend for both methods:
+
+- Bedroom utilization: occupied bed-nights divided by available bed-nights, for real beds in bedrooms.
+- Single in queen: a queen-night with one sleeper.
+- Wasted queen: a single in a queen on a night when a couple uses two beds and a person is on the floor.
+- Held-empty queen: a queen that a couple holds for a partner who is absent that night.
+- Dominated floor: a floor night while a better option was free on all the nights of the party. For a single, the free bed must not make a mixed-gender room.
+- Priority inversion: two singles of the same gender with the same nights. The person with the higher balance (by more than 1 point) has the better bed.
+- Mixed-gender room, couple split, and nights over the couch cap.
 
 ## First-come baseline
 
