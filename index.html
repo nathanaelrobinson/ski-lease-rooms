@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ski Lease Rooms</title>
+<meta name="description" content="Fair weekly room assignment for a ski lease, with a season simulation against first come, first served.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #e2e1dc;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --text-3: #7a7974;
+  --accent: #2a78d6;
+  --accent-ink: #ffffff;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --grid: #e7e6e1;
+  --warn-bg: #fff4dc;
+  --warn-ink: #6b4a00;
+  --empty: #f0efec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211;
+    --surface: #1a1a19;
+    --surface-2: #232321;
+    --border: #33332f;
+    --text: #f0efec;
+    --text-2: #c3c2b7;
+    --text-3: #8f8e86;
+    --accent: #3987e5;
+    --accent-ink: #ffffff;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --grid: #2c2c29;
+    --warn-bg: #3a2e12;
+    --warn-ink: #f3d79a;
+    --empty: #232321;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211;
+  --surface: #1a1a19;
+  --surface-2: #232321;
+  --border: #33332f;
+  --text: #f0efec;
+  --text-2: #c3c2b7;
+  --text-3: #8f8e86;
+  --accent: #3987e5;
+  --accent-ink: #ffffff;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --grid: #2c2c29;
+  --warn-bg: #3a2e12;
+  --warn-ink: #f3d79a;
+  --empty: #232321;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
+header h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--text-2); max-width: 760px; }
+nav.tabs { display: flex; gap: 4px; margin: 24px 0 16px; border-bottom: 1px solid var(--border); }
+nav.tabs button {
+  appearance: none; border: 0; background: none; color: var(--text-2);
+  font: inherit; font-weight: 500; padding: 10px 14px; cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+nav.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+section.panel { display: none; }
+section.panel.active { display: block; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px; margin-bottom: 16px;
+}
+.card h2 { font-size: 17px; margin: 0 0 4px; }
+.card h3 { font-size: 15px; margin: 0 0 8px; }
+.sub { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.spacer { flex: 1; }
+button.btn {
+  appearance: none; font: inherit; font-weight: 500; font-size: 14px;
+  padding: 7px 14px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+}
+button.btn:hover { background: var(--surface-2); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.btn.primary:hover { filter: brightness(1.08); }
+button.btn.small { padding: 3px 9px; font-size: 13px; }
+button.btn:disabled { opacity: 0.5; cursor: default; }
+input, select {
+  font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px;
+}
+input[type="number"] { width: 70px; }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg button { appearance: none; border: 0; background: var(--surface); color: var(--text-2); font: inherit; font-size: 14px; padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+th { font-weight: 600; color: var(--text-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.c, th.c { text-align: center; }
+.muted { color: var(--text-3); }
+.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); margin-left: 4px; }
+.status { font-size: 13px; color: var(--text-2); }
+.note { background: var(--warn-bg); color: var(--warn-ink); border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+
+/* Bed plan */
+.rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.room { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface); }
+.room h4 { margin: 0 0 6px; font-size: 14px; }
+.bedrow { display: grid; grid-template-columns: 112px repeat(3, 1fr); gap: 4px; align-items: center; font-size: 13px; margin-top: 4px; }
+.bedrow .label { color: var(--text-2); }
+.bedrow .slot { background: var(--surface-2); border-radius: 5px; padding: 3px 6px; min-height: 26px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bedrow .slot.free { background: none; border: 1px dashed var(--border); color: var(--text-3); }
+.bedrow .slot.held { color: var(--text-3); font-style: italic; }
+.bedrow.head { color: var(--text-3); font-size: 12px; }
+
+/* Stat tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.tile { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--surface); }
+.tile .k { font-size: 12px; color: var(--text-2); }
+.tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.tile .v .vs { font-size: 14px; font-weight: 500; color: var(--text-2); }
+.tile .d { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+/* Charts */
+.chart-box { position: relative; width: 100%; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); margin-bottom: 8px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; background: var(--sw); vertical-align: -1px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
+
+/* Season grid */
+table.heat td.cell { text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; padding: 4px 2px; min-width: 34px; border: 2px solid var(--surface); border-radius: 4px; }
+table.heat td.cell.none { background: var(--empty); color: var(--text-3); }
+table.heat th { font-size: 11px; text-align: center; padding: 4px 2px; }
+table.heat td.name { white-space: nowrap; }
+.scale { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); margin-top: 8px; }
+.scale i { display: inline-block; width: 22px; height: 12px; border-radius: 2px; }
+
+/* Setup */
+.bed-list { display: flex; flex-direction: column; gap: 4px; }
+.bed-edit { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.setting { display: grid; grid-template-columns: 180px 1fr 50px; gap: 8px; align-items: center; margin: 6px 0; }
+.setting input[type="range"] { width: 100%; }
+@media (max-width: 560px) { .setting { grid-template-columns: 1fr 50px; } .setting label { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Ski Lease Rooms</h1>
+    <p>Each weekend, members register by Tuesday evening. Then an optimizer assigns the beds. It gives priority to people who got worse beds in earlier weekends, and it adds a small random term so that ties come out differently. Sign-up time has no effect.</p>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="weekend" aria-selected="true">One weekend</button>
+    <button role="tab" data-tab="season" aria-selected="false">Season simulation</button>
+    <button role="tab" data-tab="setup" aria-selected="false">Setup</button>
+    <button role="tab" data-tab="how" aria-selected="false">How it works</button>
+  </nav>
+
+  <section class="panel active" id="panel-weekend">
+    <div class="card">
+      <div class="row">
+        <div>
+          <h2>Registrations</h2>
+          <p class="sub" id="weekend-sub"></p>
+        </div>
+        <div class="spacer"></div>
+        <div class="seg" id="start-mode">
+          <button data-mode="fresh" aria-pressed="true">Start of season</button>
+          <button data-mode="mid" aria-pressed="false">Mid-season</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn" id="btn-random">Random sign-up</button>
+        <button class="btn" id="btn-all-sat">Everyone on Saturday</button>
+        <button class="btn" id="btn-clear">Clear</button>
+        <div class="spacer"></div>
+        <span class="status" id="weekend-status"></span>
+        <button class="btn primary" id="btn-assign" disabled>Assign beds</button>
+      </div>
+      <div class="scroll"><table id="reg-table"></table></div>
+    </div>
+    <div id="weekend-result"></div>
+  </section>
+
+  <section class="panel" id="panel-season">
+    <div class="card">
+      <div class="row">
+        <div>
+          <h2>Season from 7 January to 2 May, 2027</h2>
+          <p class="sub">17 weekends. Both methods use the same random attendance. The first-come method gives people with a flexible schedule an earlier sign-up time on average.</p>
+        </div>
+        <div class="spacer"></div>
+        <span class="status" id="season-status"></span>
+        <button class="btn primary" id="btn-season">Run season</button>
+      </div>
+    </div>
+    <div id="season-result"></div>
+  </section>
+
+  <section class="panel" id="panel-setup">
+    <div class="card">
+      <div class="row">
+        <div><h2>House and people</h2><p class="sub">Changes save in this browser. Export a JSON file to share a setup.</p></div>
+        <div class="spacer"></div>
+        <button class="btn" id="btn-export">Export JSON</button>
+        <label class="btn" style="display:inline-block">Import JSON<input type="file" id="file-import" accept="application/json,.json" hidden></label>
+        <button class="btn" id="btn-reset">Reset to sample</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Optimizer settings</h3>
+      <div id="settings"></div>
+    </div>
+    <div class="card">
+      <div class="row"><h3>Rooms and beds</h3><div class="spacer"></div><button class="btn small" id="btn-add-room">Add room</button></div>
+      <p class="sub">Value is the quality of a bed, from 0 to 10. A queen holds one couple or one single. Couples can also take two twins in the same room. A shared living space has no gender matching.</p>
+      <div id="rooms-editor" class="rooms"></div>
+    </div>
+    <div class="card">
+      <div class="row"><h3>People</h3><div class="spacer"></div><button class="btn small" id="btn-add-person">Add person</button></div>
+      <p class="sub">Attend is the probability that the person comes on a weekend. Usual nights sets which nights they register. Flexible schedule is only used by the first-come method.</p>
+      <div class="scroll"><table id="people-editor"></table></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-how">
+    <div class="card" id="how"></div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highs@1.15.3/build/highs.js"></script>
+<script src="model.js"></script>
+<script src="simulate.js"></script>
+<script src="defaults.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
