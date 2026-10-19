@@ -171,6 +171,14 @@ td.pct { text-align: center; font-variant-numeric: tabular-nums; border: 2px sol
 .chip.sm { width: 14px; height: 14px; min-width: 0; padding: 0; margin-right: 4px; font-size: 9px; }
 select.g-sel { font-size: 11.5px; padding: 1px 2px; max-width: 120px; }
 table.heat sup { font-size: 8px; margin-left: 1px; }
+table.cal td.cell { font-size: 10px; }
+table.cal th.now { color: var(--accent); }
+td.cell.past, .cal-key.past { background: var(--surface-2); color: var(--text-3); }
+td.cell.locked, .cal-key.locked { background: var(--accent); color: #fff; font-weight: 600; }
+td.cell.cplan, .cal-key.cplan { background: color-mix(in srgb, var(--accent) calc(var(--c, 0.6) * 45%), transparent); color: var(--text); outline: 1.5px dashed var(--accent); outline-offset: -3px; }
+td.cell.cplan.fake, .cal-key.cplan.fake { outline-color: #d03b3b; text-decoration: line-through; }
+td.cell.surprise, .cal-key.surprise { outline: 1.5px dotted var(--text-3); outline-offset: -3px; color: var(--text-3); }
+.cal-key { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 16px; border-radius: 3px; font-size: 9.5px; margin-right: -6px; }
 .chip.held { background: none; border: 1.5px dashed var(--couple); color: var(--couple); }
 .legend .chip { margin-right: -6px; }
 .bed-key { display: inline-block; width: 16px; height: 12px; background: var(--bed-free); border: 1px solid var(--border); border-radius: 2px; margin-right: -6px; }
@@ -241,9 +249,10 @@ pre.model { background: var(--surface-2); border-radius: 6px; padding: 8px 10px;
   <section class="panel" id="panel-season">
     <div class="card">
       <div class="row" style="margin:0">
-        <h2>Season · 7 Jan – 2 May 2027</h2>
-        <span class="mono muted">17 weekends · same attendance for both methods</span>
+        <div class="row" id="season-head" style="margin:0"></div>
         <div class="spacer"></div>
+        <span id="season-source"></span>
+        <label class="btn small" data-tip="Load a season history file (JSON) made from a past sign-up sheet. It stays in this browser only.">Load history<input type="file" id="file-history" accept="application/json,.json" hidden></label>
         <span class="status mono" id="season-status"></span>
         <button class="btn primary" id="btn-season">Run</button>
       </div>

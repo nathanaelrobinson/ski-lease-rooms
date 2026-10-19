@@ -66,6 +66,11 @@
       }
       return false;
     };
+    /* The bed of a person in a party. A person can be in more than one party in actual data. */
+    const bedOf = (pi, m) => {
+      const b = result.choices[pi].assign[m];
+      return b === undefined ? Model.OVERFLOW : b;
+    };
     const valueOf = (bedId) => (bedId === Model.OVERFLOW ? 0 : bedById.get(bedId).value);
 
     /*
@@ -93,7 +98,7 @@
 
     /* Members on a floor bed or no bed, for each night. Guests do not count. */
     const floorOnNight = Model.NIGHTS.map((_, n) =>
-      result.parties.flatMap((p) => p.members.filter((m) => !Model.isGuest(m) && p.memberNights[m].includes(n) && Model.isFloor(result.assignment[m], bedById))),
+      result.parties.flatMap((p, pi) => p.members.filter((m) => !Model.isGuest(m) && p.memberNights[m].includes(n) && Model.isFloor(bedOf(pi, m), bedById))),
     );
 
     /*
@@ -106,7 +111,7 @@
       );
       /* Guest displacement: a member on the floor while a guest has a real bed on the same night. */
       const guestsInRealBeds = result.parties.filter(
-        (p) => p.kind === 'guest' && p.nights.includes(n) && !Model.isFloor(result.assignment[p.members[0]], bedById),
+        (p, pi) => p.kind === 'guest' && p.nights.includes(n) && !Model.isFloor(bedOf(pi, p.members[0]), bedById),
       ).length;
       const displaced = Math.min(floorOnNight[n].length, guestsInRealBeds);
       if (displaced > 0) {
@@ -114,7 +119,7 @@
         add('guestDisplace', n, floorOnNight[n].slice(0, displaced), '');
       }
       for (const bed of beds) {
-        if (bed.type !== 'queen') continue;
+        if (!Model.QUEEN_TYPES.has(bed.type)) continue;
         const cell = result.plan[n][bed.id];
         if (!cell) continue;
         if (cell.sleepers.length === 0) {
@@ -186,16 +191,17 @@
      * Priority inversion: two singles of the same gender with the same nights.
      * The person with the higher balance has the better bed, so a swap was possible and fairer.
      */
-    const singles = result.parties.filter((p) => p.kind === 'single');
+    const singles = result.parties.map((p, pi) => ({ p, pi })).filter((x) => x.p.kind === 'single');
     for (let i = 0; i < singles.length; i++) {
       for (let j = 0; j < singles.length; j++) {
         if (i === j) continue;
-        const a = singles[i].members[0];
-        const b = singles[j].members[0];
+        const a = singles[i].p.members[0];
+        const b = singles[j].p.members[0];
+        if (a === b) continue;
         if (personById.get(a).gender !== personById.get(b).gender) continue;
-        if (singles[i].nights.join() !== singles[j].nights.join()) continue;
+        if (singles[i].p.nights.join() !== singles[j].p.nights.join()) continue;
         const gap = (balances[a] || 0) - (balances[b] || 0);
-        if (gap > INVERSION_GAP && valueOf(result.assignment[a]) > valueOf(result.assignment[b])) {
+        if (gap > INVERSION_GAP && valueOf(bedOf(singles[i].pi, a)) > valueOf(bedOf(singles[j].pi, b))) {
           counts.priorityInversion++;
           add('priorityInversion', null, [a, b], `priority gap ${gap.toFixed(1)}`);
         }

@@ -100,37 +100,79 @@
     return p.planAhead === undefined || p.planAhead === null ? 0.5 : Number(p.planAhead);
   }
 
+  /* Share of people who plan ahead and then put a weekend on the calendar that they do not attend. */
+  const FLAKE_RATE = 0.2;
+
   /*
-   * Draw one weekend: registrations, guests, and how many weeks ahead each entry is on the calendar.
-   * A partner guest needs a host without a partner on that weekend. Else it becomes an any-bed guest.
+   * Confidence of a calendar entry that is k weeks out. The Tuesday lock-in makes the upcoming weekend certain.
+   * 1 week out = 0.9, then 0.12 less for each week, and never below 0.3.
+   */
+  function confidence(k) {
+    return k <= 0 ? 1 : Math.max(0.3, 1 - 0.12 * k);
+  }
+
+  /*
+   * Draw one weekend of the season calendar.
+   * registrations and guests are the truth at the Tuesday lock-in.
+   * leads[id] = how many weeks ahead an attendee put the weekend on the calendar (0 = only at lock-in).
+   * phantoms[id] = a plan by a person who does not attend. It is on the calendar from plannedAhead weeks out
+   * and is removed dropAhead weeks out (0 = removed at the lock-in).
    * guests[host].advance is true if the entry was on the calendar ADVANCE_WEEKS or more ahead.
    */
   function drawWeekend(people, rng, leadWeeks) {
     const registrations = drawAttendance(people, rng);
     const guests = {};
     const leads = {};
+    const phantoms = {};
     for (const p of people) {
-      if (!registrations[p.id]) continue;
-      leads[p.id] = rng() < planAhead(p) ? leadWeeks : 0;
+      if (!registrations[p.id]) {
+        if (leadWeeks > 0 && rng() < planAhead(p) * FLAKE_RATE) {
+          const plannedAhead = 1 + Math.floor(rng() * leadWeeks);
+          phantoms[p.id] = { nights: drawNights(p, rng), plannedAhead, dropAhead: Math.floor(rng() * plannedAhead) };
+        }
+        continue;
+      }
+      leads[p.id] = leadWeeks > 0 && rng() < planAhead(p) ? 1 + Math.floor(rng() * leadWeeks) : 0;
       if (rng() < guestRate(p)) {
         let type = guestType(p);
         if (type === 'partner' && p.partnerId && registrations[p.partnerId]) type = 'any';
         guests[p.id] = { type, advance: leads[p.id] >= Model.ADVANCE_WEEKS };
       }
     }
-    return { registrations, guests, leads };
+    return { registrations, guests, leads, phantoms };
   }
 
-  /* Keep only the calendar entries of a future weekend that are known `ahead` weeks before it. */
+  /*
+   * The calendar entries of a future weekend as seen `ahead` weeks before it.
+   * Real entries show if they were planned at least `ahead` weeks out. Phantom plans show until they are removed.
+   * Every visible entry has the confidence of its distance.
+   */
   function visibleWeek(week, ahead) {
     const registrations = {};
     const guests = {};
+    const conf = {};
+    const real = {};
     for (const [id, nights] of Object.entries(week.registrations)) {
       if ((week.leads[id] || 0) < ahead) continue;
       registrations[id] = nights;
+      conf[id] = confidence(ahead);
+      real[id] = true;
       if (week.guests[id]) guests[id] = week.guests[id];
     }
-    return { registrations, guests };
+    for (const [id, ph] of Object.entries(week.phantoms || {})) {
+      if (ph.plannedAhead < ahead || ph.dropAhead >= ahead) continue;
+      registrations[id] = ph.nights;
+      conf[id] = confidence(ahead);
+      real[id] = false;
+    }
+    return { registrations, guests, confidence: conf, real };
+  }
+
+  /* The known future weekends on the Tuesday of week t, up to `lead` weeks out. */
+  function futureWeeks(attendance, t, lead) {
+    const out = [];
+    for (let k = 1; k <= lead && t + k < attendance.length; k++) out.push(visibleWeek(attendance[t + k], k));
+    return out;
   }
 
   /*
@@ -215,10 +257,7 @@
     const count = limit === undefined ? attendance.length : limit;
     for (let t = 0; t < count; t++) {
       const { registrations, guests } = attendance[t];
-      const future = [];
-      if (method === 'optimizer' && config.settings.planning) {
-        for (let k = 1; k <= lead && t + k < attendance.length; k++) future.push(visibleWeek(attendance[t + k], k));
-      }
+      const future = method === 'optimizer' && config.settings.planning ? futureWeeks(attendance, t, lead) : [];
       const input = {
         rooms: config.rooms,
         people: config.people,
@@ -249,13 +288,99 @@
 
   function addFloorNights(floorNights, result, bedById) {
     const next = { ...floorNights };
-    for (const party of result.parties) {
+    result.parties.forEach((party, pi) => {
       for (const m of party.members) {
         if (Model.isGuest(m)) continue;
-        if (Model.isFloor(result.assignment[m], bedById)) next[m] = (next[m] || 0) + party.memberNights[m].length;
+        const b = result.choices[pi].assign[m];
+        if (Model.isFloor(b === undefined ? null : b, bedById)) next[m] = (next[m] || 0) + party.memberNights[m].length;
+      }
+    });
+    return next;
+  }
+
+  /*
+   * Build a result from the actual beds of a past weekend.
+   * actual[n] maps a person or guest id to a bed id (null = no bed). People can change beds between nights,
+   * so each run of nights in one bed is its own party. Two partners in one bed are a couple.
+   * A host and their first guest in one bed are a host with a partner guest.
+   */
+  function actualResult(week, people, rooms) {
+    const beds = Model.flattenBeds(rooms);
+    const byId = new Map(people.map((p) => [p.id, p]));
+    const stays = new Map();
+    week.actual.forEach((night, n) => {
+      for (const [id, bed] of Object.entries(night)) {
+        const key = `${id}|${bed}`;
+        if (!stays.has(key)) stays.set(key, { id, bed, nights: [] });
+        stays.get(key).nights.push(n);
+      }
+    });
+    const used = new Set();
+    const parties = [];
+    const choices = [];
+    const list = [...stays.values()];
+    const find = (id, bed, nights) => list.find((x) => x.id === id && x.bed === bed && x.nights.join() === nights.join() && !used.has(x));
+    const push = (party, bed, assign) => {
+      parties.push(party);
+      choices.push(bed === null ? { beds: [], assign, overflow: true } : { beds: [bed], assign, shared: Object.keys(assign).length > 1 });
+    };
+    for (const x of list) {
+      if (used.has(x)) continue;
+      const nights = x.nights;
+      const p = byId.get(x.id);
+      const partner = p && p.partnerId ? find(p.partnerId, x.bed, nights) : null;
+      const guest = !Model.isGuest(x.id) && x.bed !== null ? find(Model.guestId(x.id), x.bed, nights) : null;
+      used.add(x);
+      if (partner && x.bed !== null) {
+        used.add(partner);
+        push({ id: `a${parties.length}`, kind: 'couple', members: [x.id, partner.id], nights, memberNights: { [x.id]: nights, [partner.id]: nights } }, x.bed, { [x.id]: x.bed, [partner.id]: x.bed });
+      } else if (guest) {
+        used.add(guest);
+        const gid = guest.id;
+        push({ id: `a${parties.length}`, kind: 'hostPartner', host: x.id, members: [x.id, gid], nights, memberNights: { [x.id]: nights, [gid]: nights } }, x.bed, { [x.id]: x.bed, [gid]: x.bed });
+      } else if (Model.isGuest(x.id)) {
+        push({ id: `a${parties.length}`, kind: 'guest', guestType: 'any', host: Model.hostOf(x.id), members: [x.id], nights, memberNights: { [x.id]: nights } }, x.bed, { [x.id]: x.bed });
+      } else {
+        push({ id: `a${parties.length}`, kind: 'single', members: [x.id], nights, memberNights: { [x.id]: nights } }, x.bed, { [x.id]: x.bed });
       }
     }
-    return next;
+    return { status: 'Optimal', ...Model.finishResult(parties, choices, beds) };
+  }
+
+  /*
+   * Replay a past season: the optimizer on the actual attendance and guests, against the actual beds.
+   * The history has no calendar data, so planning ahead has nothing to look at.
+   */
+  function runHistory(highs, settings, history) {
+    const config = { rooms: history.rooms, people: history.people.map((p) => ({ attend: 0.5, pattern: 'fri-sat', ...p })), settings };
+    const attendance = history.weekends.map((w) => ({ registrations: w.registrations, guests: w.guests, leads: {}, phantoms: {} }));
+    const seed = Number(settings.seed) || 1;
+    const optimizer = runMethod(highs, config, attendance, 'optimizer', seed + 1);
+    const bedById = new Map(Model.flattenBeds(config.rooms).map((b) => [b.id, b]));
+    const couchCap = capSetting(settings);
+    let balances = {};
+    let floorNights = {};
+    const weeks = [];
+    history.weekends.forEach((w, t) => {
+      const result = actualResult(w, config.people, config.rooms);
+      const people = Model.withGuests(config.people, w.guests);
+      const outcomes = Outcomes.assessWeekend({ result, rooms: config.rooms, people, balances, floorNights, couchCap });
+      const update = Model.updateBalances(balances, result, config.rooms);
+      weeks.push({ registrations: attendance[t].registrations, guests: w.guests, leads: {}, result, outcomes, nightly: update.nightly, balancesBefore: balances, balancesAfter: update.balances });
+      balances = update.balances;
+      floorNights = addFloorNights(floorNights, result, bedById);
+    });
+    const actual = { method: 'actual', weeks, balances, floorNights };
+    return {
+      history: true,
+      config,
+      nightLabels: history.nightLabels,
+      weekends: history.weekends.map((w, i) => ({ index: i, label: w.label })),
+      attendance,
+      methods: [['optimizer', 'Optimizer'], ['firstCome', `Actual ${history.season}`]],
+      optimizer: { ...optimizer, metrics: metrics(optimizer, config) },
+      firstCome: { ...actual, metrics: metrics(actual, config) },
+    };
   }
 
   function drawSeasonAttendance(people, seed, count, leadWeeks) {
@@ -367,12 +492,16 @@
     drawAttendance,
     drawWeekend,
     visibleWeek,
+    futureWeeks,
+    confidence,
     guestRate,
     guestType,
     planAhead,
     firstComeWeekend,
     runMethod,
     runSeason,
+    runHistory,
+    actualResult,
     midSeasonState,
     drawSeasonAttendance,
     capSetting,

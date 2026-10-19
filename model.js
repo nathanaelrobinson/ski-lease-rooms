@@ -7,6 +7,7 @@
  *   S0  Members only. A host with a partner guest counts as alone. This gives the member floor nights.
  *   S1  Members and partner guests. Member floor nights and no-bed nights must not go up.
  *   S2  Planning window (optional). Play the known future weekends forward to get projected priority.
+ *       The change of each member is scaled by the confidence of their calendar entry.
  *       Solve this weekend again with it. This weekend must stay as good as S1 on the hard measures.
  *   S3  Roommate and any-bed guests fill the beds that are left. Members do not move.
  */
@@ -34,8 +35,9 @@
   /* A guest with no bed costs GUEST_NOBED_PENALTY points for each night. A roommate in the host room gets ROOMMATE_BONUS. */
   const GUEST_NOBED_PENALTY = 100;
   const ROOMMATE_BONUS = 20;
-  /* A couple can share a bed of these types. */
-  const SHARED_TYPES = new Set(['queen', 'air_queen']);
+  /* A couple can share a bed of these types. QUEEN_TYPES get the couple queen bonus. */
+  const SHARED_TYPES = new Set(['queen', 'king', 'full', 'air_queen']);
+  const QUEEN_TYPES = new Set(['queen', 'king']);
   /* A night in a bed of these types, or in no bed, counts toward the couch cap. */
   const FLOOR_TYPES = new Set(['couch', 'air_twin', 'air_queen']);
   const BASE_WEIGHT = 0.1;
@@ -63,12 +65,17 @@
     return beds;
   }
 
-  function guestId(hostId) {
-    return `g:${hostId}`;
+  /* Guest k of a host has the id g:host (k = 1) or g:host#k. */
+  function guestId(hostId, k = 1) {
+    return k === 1 ? `g:${hostId}` : `g:${hostId}#${k}`;
   }
 
   function isGuest(id) {
     return typeof id === 'string' && id.startsWith('g:');
+  }
+
+  function hostOf(id) {
+    return id.slice(2).split('#')[0];
   }
 
   /* Add one person record for each guest, so that names and genders resolve. Guests have gender X. */
@@ -77,7 +84,7 @@
     for (const [hostId, g] of Object.entries(guests || {})) {
       const host = people.find((p) => p.id === hostId);
       if (!host) continue;
-      out.push({ id: guestId(hostId), name: `${host.name}+`, gender: 'X', guestOf: hostId, guestType: g.type });
+      for (let k = 1; k <= (g.count || 1); k++) out.push({ id: guestId(hostId, k), name: `${host.name}+`, gender: 'X', guestOf: hostId, guestType: g.type });
     }
     return out;
   }
@@ -129,24 +136,27 @@
         members.push({ id: `s_${person.id}`, kind: 'single', members: [person.id], nights: sorted, memberNights: { [person.id]: sorted } });
       }
     }
+    /* Guests who do not share the host bed. A partner guest who shares is guest 1, so the others start at 2. */
     for (const [hostId, g] of Object.entries(guests)) {
       const nights = registrations[hostId];
       if (!nights || nights.length === 0) continue;
       const hostParty = members.find((p) => p.members.includes(hostId));
       if (!hostParty) continue;
-      if (g.type === 'partner' && hostParty.kind === 'hostPartner') continue;
-      const gid = guestId(hostId);
+      const first = g.type === 'partner' && hostParty.kind === 'hostPartner' ? 2 : 1;
       const sorted = [...nights].sort();
-      guestParties.push({
-        id: `g_${hostId}`,
-        kind: 'guest',
-        guestType: g.type === 'partner' ? 'any' : g.type,
-        advance: !!g.advance,
-        members: [gid],
-        host: hostId,
-        nights: sorted,
-        memberNights: { [gid]: sorted },
-      });
+      for (let k = first; k <= (g.count || 1); k++) {
+        const gid = guestId(hostId, k);
+        guestParties.push({
+          id: `g_${hostId}_${k}`,
+          kind: 'guest',
+          guestType: g.type === 'partner' || k > 1 ? 'any' : g.type,
+          advance: !!g.advance,
+          members: [gid],
+          host: hostId,
+          nights: sorted,
+          memberNights: { [gid]: sorted },
+        });
+      }
     }
     return { members, guests: guestParties };
   }
@@ -165,7 +175,7 @@
     } else {
       const [a, b] = party.members;
       for (const bed of beds) {
-        if (SHARED_TYPES.has(bed.type)) options.push({ beds: [bed.id], assign: { [a]: bed.id, [b]: bed.id }, queen: bed.type === 'queen', shared: true });
+        if (SHARED_TYPES.has(bed.type)) options.push({ beds: [bed.id], assign: { [a]: bed.id, [b]: bed.id }, queen: QUEEN_TYPES.has(bed.type), shared: true });
       }
       const twinsByRoom = new Map();
       for (const bed of beds) {
@@ -445,7 +455,14 @@
         if (!Object.keys(wk.registrations).length) continue;
         const r = solveWeekend(highs, { ...input, registrations: wk.registrations, guests: wk.guests || {}, balances: projected, floorNights: floor, future: [], settings: { ...settings, planning: false } });
         if (r.status !== 'Optimal') continue;
-        projected = updateBalances(projected, r, input.rooms).balances;
+        /* Scale the change of each member by the confidence of their calendar entry. */
+        const after = updateBalances(projected, r, input.rooms).balances;
+        const next = { ...projected };
+        for (const [m, v] of Object.entries(after)) {
+          const c = wk.confidence && wk.confidence[m] !== undefined ? wk.confidence[m] : 1;
+          next[m] = (projected[m] || 0) + c * (v - (projected[m] || 0));
+        }
+        projected = next;
       }
       const planWeights = priorityWeights(attendees, projected, settings.strength);
       const b2 = weekBlock('w', members, beds, { ...ctx, weights: planWeights });
@@ -546,9 +563,10 @@
       for (const party of result.parties) {
         if (party.kind === 'guest') continue;
         const pool = party.kind === 'couple' ? 'couple' : 'single';
+        const option = result.choices[result.parties.indexOf(party)];
         for (const m of party.members) {
           if (isGuest(m) || !party.memberNights[m].includes(n)) continue;
-          rows.push({ personId: m, pool, value: valueOf(result.assignment[m]) });
+          rows.push({ personId: m, pool, value: valueOf(option.assign[m]) });
         }
       }
       const averages = {};
@@ -560,18 +578,19 @@
       nightly.push({ averages, rows });
     }
     /* Guest charges. */
-    for (const party of result.parties) {
+    result.parties.forEach((party, pi) => {
+      const option = result.choices[pi];
       for (const m of party.members) {
         if (!isGuest(m)) continue;
-        const host = m.slice(2);
-        const bedId = result.assignment[m];
-        if (bedId === OVERFLOW || bedId === result.assignment[host]) continue;
+        const host = hostOf(m);
+        const bedId = option.assign[m];
+        if (bedId === OVERFLOW || bedId === undefined || bedId === option.assign[host]) continue;
         for (const n of party.memberNights[m]) {
           const mean = nightly[n].averages.single === undefined ? 0 : nightly[n].averages.single;
           next[host] = (next[host] || 0) + Math.max(0, valueOf(bedId) - mean);
         }
       }
-    }
+    });
     return { balances: next, nightly };
   }
 
@@ -579,7 +598,9 @@
     NIGHTS,
     OVERFLOW,
     SHARED_TYPES,
+    QUEEN_TYPES,
     FLOOR_TYPES,
+    hostOf,
     GUEST_TYPES,
     ADVANCE_WEEKS,
     isFloor,

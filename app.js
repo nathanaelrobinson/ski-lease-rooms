@@ -16,7 +16,9 @@
     ['firstCome', 'First come'],
   ];
   const TYPE_LABELS = {
+    king: 'King',
     queen: 'Queen',
+    full: 'Full',
     twin: 'Twin',
     bunk_bottom: 'Bottom bunk',
     bunk_top: 'Top bunk',
@@ -81,6 +83,19 @@
   let config = loadConfig();
   const weekend = { mode: 'fresh', registrations: {}, guests: {}, runs: 0, midState: null, last: null, view: 'optimizer', night: 2 };
   let season = null;
+  const HISTORY_KEY = 'ski-lease-history-v1';
+  let history = loadHistory();
+  let seasonSource = 'sim';
+
+  /* A season history file stays in this browser only. */
+  function loadHistory() {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
   const charts = {};
 
   /* Configuration */
@@ -154,26 +169,40 @@
   }
 
   function person(id) {
-    return config.people.find((x) => x.id === id);
+    return config.people.find((x) => x.id === id) || (season && season.config ? season.config.people.find((x) => x.id === id) : undefined);
+  }
+
+  /* The configuration, methods, and night labels of the season on screen. A history replay has its own. */
+  function SC() {
+    return (season && season.config) || config;
+  }
+  function SM() {
+    return (season && season.methods) || METHODS;
+  }
+  function NL() {
+    return (season && season.nightLabels) || M.NIGHTS;
   }
 
   function personName(id) {
-    if (M.isGuest(id)) return `${personName(id.slice(2))}'s guest`;
+    if (M.isGuest(id)) {
+      const k = id.includes('#') ? ` ${id.split('#')[1]}` : '';
+      return `${personName(M.hostOf(id))}'s guest${k}`;
+    }
     const p = person(id);
     return p ? p.name : id;
   }
 
   function initials(id) {
-    if (M.isGuest(id)) return `${initials(id.slice(2))}+`;
+    if (M.isGuest(id)) return `${initials(M.hostOf(id))}+`;
     const name = personName(id).trim();
     const parts = name.split(/\s+/);
     return (parts.length > 1 ? parts[0][0] + parts[1][0] : name.slice(0, 2)).toUpperCase();
   }
 
-  function bedInfo() {
-    const beds = M.flattenBeds(config.rooms);
+  function bedInfo(rooms = config.rooms) {
+    const beds = M.flattenBeds(rooms);
     const byId = new Map();
-    for (const room of config.rooms) {
+    for (const room of rooms) {
       const counts = {};
       for (const bed of room.beds) counts[bed.type] = (counts[bed.type] || 0) + 1;
       const seen = {};
@@ -188,11 +217,11 @@
   }
 
   /* Write the nights as day names, for example "Fri–Sat" or "Sat". */
-  function nightsText(nights) {
+  function nightsText(nights, labels = M.NIGHTS) {
     const sorted = [...nights].sort();
     const run = sorted.every((n, i) => i === 0 || n === sorted[i - 1] + 1);
-    if (sorted.length > 1 && run) return `${M.NIGHTS[sorted[0]]}–${M.NIGHTS[sorted[sorted.length - 1]]}`;
-    return sorted.map((n) => M.NIGHTS[n]).join(', ');
+    if (sorted.length > 1 && run) return `${labels[sorted[0]]}–${labels[sorted[sorted.length - 1]]}`;
+    return sorted.map((n) => labels[n]).join(', ');
   }
 
   function uid(prefix) {
@@ -261,9 +290,7 @@
     if (!weekend.midState && highs) {
       const t = weekend.mode === 'fresh' ? 0 : S.MID_SEASON_WEEKENDS;
       const sim = weekend.mode === 'fresh' ? { balances: {}, floorNights: {}, attendance: S.drawSeasonAttendance(config.people, Number(config.settings.seed) || 1, S.SEASON_WEEKENDS, config.settings.leadWeeks) } : S.midSeasonState(highs, config);
-      const lead = Number(config.settings.leadWeeks) || 0;
-      const future = [];
-      for (let k = 1; k <= lead && t + k < sim.attendance.length; k++) future.push(S.visibleWeek(sim.attendance[t + k], k));
+      const future = S.futureWeeks(sim.attendance, t, Number(config.settings.leadWeeks) || 0);
       weekend.midState = { balances: sim.balances, floorNights: sim.floorNights, future };
     }
     return weekend.midState || { balances: {}, floorNights: {}, future: [] };
@@ -400,8 +427,8 @@
   }
 
   /* Each row: [label, optimizer value, first-come value, unit, lower is better, digits, signed, hover text]. */
-  function compareTable(rows, noUnit) {
-    let html = `<table class="metrics"><thead><tr><th>Measure</th><th class="num"><span class="key opt"></span>Optimizer</th><th class="num"><span class="key fc"></span>First come</th><th class="num">Δ</th>${noUnit ? '' : '<th></th>'}</tr></thead><tbody>`;
+  function compareTable(rows, noUnit, labels = METHODS) {
+    let html = `<table class="metrics"><thead><tr><th>Measure</th><th class="num"><span class="key opt"></span>${esc(labels[0][1])}</th><th class="num"><span class="key fc"></span>${esc(labels[1][1])}</th><th class="num">Δ</th>${noUnit ? '' : '<th></th>'}</tr></thead><tbody>`;
     for (const r of rows) {
       if (r.length === 1) html += `<tr class="group"><td colspan="5">${r[0]}</td></tr>`;
       else html += compareRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], noUnit, r[7]);
@@ -419,13 +446,13 @@
     return list.filter((x) => !prefs.has(x.type));
   }
 
-  function incidentRows(incidents, beds, withWeek) {
+  function incidentRows(incidents, beds, withWeek, rooms = config.rooms) {
     if (incidents.length === 0) return '<p class="sub mono">none</p>';
     let html = `<div class="scroll"><table class="mono tight"><thead><tr>${withWeek ? '<th>Weekend</th>' : ''}<th>Night</th><th>Type</th><th>People</th><th>Where</th></tr></thead><tbody>`;
     for (const x of incidents) {
       const detail = String(x.detail || '')
         .split('+')
-        .map((id) => (beds.has(id) ? beds.get(id).name : (config.rooms.find((r) => r.id === id) || { name: id }).name))
+        .map((id) => (beds.has(id) ? beds.get(id).name : (rooms.find((r) => r.id === id) || { name: id }).name))
         .join(' + ');
       html += `<tr>${withWeek ? `<td>${esc(season.weekends[x.week].label)}</td>` : ''}<td>${x.night === null ? 'all' : M.NIGHTS[x.night]}</td><td>${esc(INCIDENT_LABELS[x.type] || x.type)}</td><td>${esc(x.people.map(personName).join(', '))}</td><td>${esc(detail)}</td></tr>`;
     }
@@ -545,14 +572,54 @@
 
   /* Season */
 
+  function renderSeasonHeader() {
+    const h = document.getElementById('season-head');
+    const isHist = seasonSource === 'history' && history;
+    const title = isHist ? `Replay of ${history.season} · ${history.weekends.length} weekends` : 'Season · 7 Jan – 2 May 2027';
+    const sub = isHist ? 'actual attendance and guests from the sign-up sheet · optimizer vs what actually happened' : '17 weekends · same attendance for both methods';
+    h.innerHTML = `<h2>${esc(title)}</h2><span class="mono muted">${esc(sub)}</span>`;
+    const opts = [['sim', 'Simulated']];
+    if (history) opts.push(['history', `${history.season} actual`]);
+    document.getElementById('season-source').innerHTML = seg('src-seg', opts, seasonSource);
+    onSeg('src-seg', (v) => {
+      seasonSource = v;
+      season = null;
+      runSeason();
+    });
+  }
+
+  function setupHistoryImport() {
+    document.getElementById('file-history').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const h = JSON.parse(await file.text());
+        if (!Array.isArray(h.weekends) || !Array.isArray(h.rooms) || !Array.isArray(h.people)) throw new Error('The file needs weekends, rooms, and people.');
+        history = h;
+        try {
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+        } catch (err) {
+          /* Storage can be blocked. The history stays loaded until the page closes. */
+        }
+        seasonSource = 'history';
+        season = null;
+        runSeason();
+      } catch (err) {
+        alert(`Load failed: ${err.message}`);
+      }
+      e.target.value = '';
+    });
+  }
+
   function runSeason() {
     if (!highs) return;
     const status = document.getElementById('season-status');
     status.textContent = 'running…';
     setTimeout(() => {
       const t0 = performance.now();
-      season = S.runSeason(highs, config);
+      season = seasonSource === 'history' && history ? S.runHistory(highs, config.settings, history) : S.runSeason(highs, config);
       status.textContent = `${Math.round(performance.now() - t0)} ms · seed ${config.settings.seed}`;
+      renderSeasonHeader();
       renderSeason();
     }, 20);
   }
@@ -565,7 +632,7 @@
     const maxFloor = (m) => Math.max(0, ...Object.values(m.perPerson).map((x) => x.floorNights));
     const cap = S.capSetting(config.settings);
     const meanValue = (m, pred) => {
-      const list = config.people.filter(pred).map((p) => m.perPerson[p.id]);
+      const list = SC().people.filter(pred).map((p) => m.perPerson[p.id]);
       const nights = list.reduce((s, x) => s + x.nights, 0);
       return nights ? list.reduce((s, x) => s + x.valueSum, 0) / nights : null;
     };
@@ -584,10 +651,10 @@
       ...measureRows(o.outcomes, f.outcomes, PREFERENCES),
     ];
 
-    let util = `<table class="mono tight util"><thead><tr><th></th><th class="c" colspan="3"><span class="key opt"></span>Opt</th><th class="c gap" colspan="3"><span class="key fc"></span>FC</th></tr><tr><th>Room</th>${METHODS.map((_, i) => M.NIGHTS.map((n, j) => `<th class="c ${i === 1 && j === 0 ? 'gap' : ''}">${n[0]}</th>`).join('')).join('')}</tr></thead><tbody>`;
-    for (const room of config.rooms) {
+    let util = `<table class="mono tight util"><thead><tr><th></th><th class="c" colspan="3"><span class="key opt"></span>${esc(SM()[0][1])}</th><th class="c gap" colspan="3"><span class="key fc"></span>${esc(SM()[1][1])}</th></tr><tr><th>Room</th>${SM().map((_, i) => NL().map((n, j) => `<th class="c ${i === 1 && j === 0 ? 'gap' : ''}">${n[0]}</th>`).join('')).join('')}</tr></thead><tbody>`;
+    for (const room of SC().rooms) {
       util += `<tr><td>${esc(room.name)}</td>`;
-      METHODS.forEach(([m], i) => {
+      SM().forEach(([m], i) => {
         season[m].metrics.roomNights[room.id].forEach((x, j) => {
           const pct = x.total ? (100 * x.occupied) / x.total : 0;
           const idx = Math.round((pct / 100) * (RAMP.length - 1));
@@ -598,51 +665,106 @@
     }
     util += '</tbody></table><p class="sub mono">% of sleeping spaces used over the season · queen = 2 spaces</p>';
 
-    let html = `<div class="card"><div class="cols"><div><h2>Metrics</h2>${compareTable(rows)}<p class="sub mono">bold = better · hover ⓘ for definitions</p></div><div><h2>Room Utilization by Night</h2>${util}</div></div></div>`;
+    let html = `<div class="card"><div class="cols"><div><h2>Metrics</h2>${compareTable(rows, false, SM())}<p class="sub mono">bold = better · hover ⓘ for definitions</p></div><div><h2>Room Utilization by Night</h2>${util}</div></div></div>`;
+
+    if (!season.history) html += '<div class="card" id="calendar-card"></div>';
 
     html += `<div class="card"><h2>Priority by Person and Weekend <span class="i" data-tip="${esc(TIPS.priority)}">ⓘ</span></h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· above 0 = due a better room · hover a line for the name</span></div>
       <div class="two"><div><h3>Optimizer</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-o"></canvas></div></div>
-      <div><h3>Stages</h3>
-<pre class="model mono">S0  members only, hosts alone        → member floor F0, no-bed N0
-S1  + partner guests (shared bed)     s.t. floor ≤ F0, no-bed ≤ N0
-S2  plan ahead (rollout): solve known future weeks with S1,
-    projected priority → weights; re-solve this week
-    s.t. floor, no-bed, mixed ≤ S1; couple queens, partners ≥ S1
-S3  roommate / any-bed guests fill free beds; members fixed
-partner guest booked ≥ 3 wk ahead: same queen bonus as a couple
-host pays the guest's bed value in priority (unless shared bed)</pre>
-<h3>First come</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
+      <div><h3>${esc(SM()[1][1])}</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><div class="two"><div><h2>Priority per Night by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· (F) flexible schedule · nights stayed</span></div>
-      <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-adv"></canvas></div></div>
-      <div><h2>Floor Nights by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· couch, air mattress, no bed</span></div>
-      <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-floor"></canvas></div></div></div></div>`;
+    html += `<div class="card"><div class="two"><div><h2>Priority per Night by Person</h2><div class="legend small"><span class="key opt"></span>${esc(SM()[0][1])}<span class="key fc"></span>${esc(SM()[1][1])}<span class="muted mono">· (F) flexible schedule · nights stayed</span></div>
+      <div class="chart-box" style="height:${SC().people.length * 24 + 50}px"><canvas id="ch-adv"></canvas></div></div>
+      <div><h2>Floor Nights by Person</h2><div class="legend small"><span class="key opt"></span>${esc(SM()[0][1])}<span class="key fc"></span>${esc(SM()[1][1])}<span class="muted mono">· couch, air mattress, no bed</span></div>
+      <div class="chart-box" style="height:${SC().people.length * 24 + 50}px"><canvas id="ch-floor"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><div class="row"><h2>Bed Quality by Person and Weekend</h2><span class="mono muted small">0–10 · + = brought a guest · hover a cell for the bed</span><div class="spacer"></div>${seg('grid-method', METHODS, 'optimizer')}</div>
+    html += `<div class="card"><div class="row"><h2>Bed Quality by Person and Weekend</h2><span class="mono muted small">0–10 · + = brought a guest · hover a cell for the bed</span><div class="spacer"></div>${seg('grid-method', SM(), 'optimizer')}</div>
       <div class="scroll" id="grid"></div>
       <div class="scale">0 ${RAMP.filter((_, i) => i % 2 === 0).map((c) => `<i style="background:${c}"></i>`).join('')} 10</div></div>`;
 
-    const beds = bedInfo();
+    const beds = bedInfo(SC().rooms);
     html += '<div class="card"><h2>Issues</h2>';
-    for (const [m, title] of METHODS) {
+    for (const [m, title] of SM()) {
       const list = issues(season[m].metrics.incidents);
-      html += `<details><summary>${title} (${list.length})</summary>${incidentRows(list, beds, true)}</details>`;
+      html += `<details><summary>${title} (${list.length})</summary>${incidentRows(list, beds, true, SC().rooms)}</details>`;
     }
     html += '</div>';
 
     out.innerHTML = html;
+    if (!season.history) renderCalendar();
     drawSeasonCharts();
     renderGrid('optimizer');
     onSeg('grid-method', renderGrid);
   }
 
+  /*
+   * The season calendar as seen on the Tuesday of one weekend.
+   * Past weekends show who came. The upcoming weekend is locked at noon Tuesday.
+   * Future weekends show the plans on the calendar, each with the confidence the planner gives it.
+   */
+  const cal = { today: 0, reveal: false };
+  function renderCalendar() {
+    const el = document.getElementById('calendar-card');
+    if (!el) return;
+    const att = season.attendance;
+    const lead = Number(config.settings.leadWeeks) || 0;
+    const t0 = cal.today;
+    let html = `<div class="row"><h2>Calendar <span class="i" data-tip="The season calendar as everyone saw it on the Tuesday before a weekend. The upcoming weekend locks at noon Tuesday, so it is certain. Weekends further out show only the plans people entered, and the planner trusts them less the further out they are.">ⓘ</span></h2>
+      <label class="mono muted small">Tuesday of <b id="cal-label">${esc(season.weekends[t0].label)}</b> <input type="range" id="cal-today" min="0" max="${att.length - 1}" value="${t0}" style="width:220px;vertical-align:middle"></label>
+      <div class="spacer"></div><label class="small"><input type="checkbox" id="cal-reveal" ${cal.reveal ? 'checked' : ''}> reveal what happened</label></div>`;
+    html += '<div class="scroll"><table class="heat cal"><thead><tr><th style="text-align:left">Person</th>';
+    season.weekends.forEach((w, t) => (html += `<th class="${t === t0 ? 'now' : ''}">${esc(w.label)}</th>`));
+    html += '</tr></thead><tbody>';
+    const views = att.map((w, t) => (t > t0 && t - t0 <= lead ? S.visibleWeek(w, t - t0) : null));
+    let planned = 0;
+    let phantom = 0;
+    for (const p of config.people) {
+      html += `<tr><td class="name"><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
+      att.forEach((w, t) => {
+        const real = w.registrations[p.id];
+        const g = w.guests[p.id] ? '<sup>+</sup>' : '';
+        if (t < t0) {
+          html += real ? `<td class="cell past" data-tip="${esc(p.name)} came, ${esc(nightsText(real))}">✓${g}</td>` : '<td class="cell none"></td>';
+        } else if (t === t0) {
+          html += real ? `<td class="cell locked" data-tip="Locked Tuesday noon: ${esc(nightsText(real))}">${esc(nightsText(real).replace(/[a-z]/g, ''))}${g}</td>` : '<td class="cell none"></td>';
+        } else {
+          const v = views[t];
+          const on = v && v.registrations[p.id];
+          if (on) {
+            planned++;
+            const c = Math.round(v.confidence[p.id] * 100);
+            const fake = !v.real[p.id];
+            if (fake) phantom++;
+            const cls = cal.reveal && fake ? 'cplan fake' : 'cplan';
+            html += `<td class="cell ${cls}" style="--c:${c / 100}" data-tip="On the calendar ${t - t0} week(s) out · planner confidence ${c}%${cal.reveal ? (fake ? ' · did NOT come' : ' · came') : ''}">${c}</td>`;
+          } else if (cal.reveal && real && t - t0 <= lead) {
+            html += `<td class="cell surprise" data-tip="Not on the calendar yet · came anyway">?</td>`;
+          } else html += '<td class="cell none"></td>';
+        }
+      });
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    html += `<div class="legend small"><span class="cal-key past">✓</span>came<span class="cal-key locked">FS</span>locked Tuesday noon<span class="cal-key cplan">70</span>planned · % = planner confidence${cal.reveal ? '<span class="cal-key cplan fake">40</span>plan fell through<span class="cal-key surprise">?</span>came without a plan' : ''}<span class="muted mono">· ${planned} plans visible in the next ${lead} weeks${cal.reveal ? `, ${phantom} fell through` : ''}</span></div>`;
+    el.innerHTML = html;
+    document.getElementById('cal-today').addEventListener('input', (e) => {
+      cal.today = Number(e.target.value);
+      renderCalendar();
+      document.getElementById('cal-today').focus();
+    });
+    document.getElementById('cal-reveal').addEventListener('change', (e) => {
+      cal.reveal = e.target.checked;
+      renderCalendar();
+    });
+  }
+
   function renderGrid(method) {
     const run = season[method];
-    const beds = bedInfo();
+    const beds = bedInfo(SC().rooms);
     let html = '<table class="heat"><thead><tr><th style="text-align:left">Person</th>';
     for (const w of season.weekends) html += `<th>${esc(w.label)}</th>`;
     html += `<th class="num"><span data-tip="Priority per night at the end of the season. Above 0 = due a better room.">Priority ⓘ</span></th></tr></thead><tbody>`;
-    for (const p of config.people) {
+    for (const p of SC().people) {
       html += `<tr><td class="name"><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
       run.weeks.forEach((week) => {
         const nights = week.registrations[p.id];
@@ -655,7 +777,7 @@ host pays the guest's bed value in priority (unless shared bed)</pre>
         const value = bedId === M.OVERFLOW ? 0 : beds.get(bedId).value;
         const idx = Math.max(0, Math.min(RAMP.length - 1, Math.round((value / 10) * (RAMP.length - 1))));
         const ink = idx >= 6 ? '#ffffff' : '#0b0b0b';
-        const title = `${p.name}: ${bedId === M.OVERFLOW ? 'no bed' : beds.get(bedId).name}, ${nightsText(party.memberNights[p.id])}`;
+        const title = `${p.name}: ${bedId === M.OVERFLOW ? 'no bed' : beds.get(bedId).name}, ${nightsText(party.memberNights[p.id], NL())}`;
         const g = week.guests && week.guests[p.id];
         html += `<td class="cell" style="background:${RAMP[idx]};color:${ink}" data-tip="${esc(title)}${g ? ` · guest: ${GUEST_LABELS[g.type]}${g.advance ? ', booked ahead' : ''}` : ''}">${value}${g ? '<sup>+</sup>' : ''}</td>`;
       });
@@ -709,8 +831,8 @@ host pays the guest's bed value in priority (unless shared bed)</pre>
     /* Use one y range for both balance charts, so the two panels compare directly. */
     let lo = 0;
     let hi = 0;
-    for (const [m] of METHODS) {
-      for (const p of config.people) {
+    for (const [m] of SM()) {
+      for (const p of SC().people) {
         for (const b of season[m].metrics.perPerson[p.id].balanceHistory) {
           const v = -b;
           lo = Math.min(lo, v);
@@ -724,7 +846,7 @@ host pays the guest's bed value in priority (unless shared bed)</pre>
         type: 'line',
         data: {
           labels,
-          datasets: config.people.map((p) => ({
+          datasets: SC().people.map((p) => ({
             label: p.name,
             data: season[method].metrics.perPerson[p.id].balanceHistory.map((v) => Math.round(-v * 10) / 10),
             borderColor: p.partnerId ? cCouple : cSingle,
@@ -740,7 +862,7 @@ host pays the guest's bed value in priority (unless shared bed)</pre>
           interaction: { mode: 'nearest', intersect: false },
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmt(c.parsed.y)}` } } },
           scales: {
-            x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, title: axisTitle('Weekend (Thursday date)', text2) },
+            x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, title: axisTitle(season && season.history ? 'Weekend (Friday date)' : 'Weekend (Thursday date)', text2) },
             y: { min: Math.floor(lo - pad), max: Math.ceil(hi + pad), grid: { color: grid }, title: axisTitle('Priority (points)', text2) },
           },
         },
@@ -748,17 +870,17 @@ host pays the guest's bed value in priority (unless shared bed)</pre>
     charts.balO = balanceChart('ch-bal-o', 'optimizer');
     charts.balF = balanceChart('ch-bal-f', 'firstCome');
 
-    const names = config.people.map((p) => `${p.name}${p.flexible ? ' (F)' : ''} · ${season.optimizer.metrics.perPerson[p.id].nights}`);
+    const names = SC().people.map((p) => `${p.name}${p.flexible ? ' (F)' : ''} · ${season.optimizer.metrics.perPerson[p.id].nights}`);
     const hbar = (canvasId, key, digits, xTitle, sign = 1) => {
       const get = (m) =>
-        config.people.map((p) => {
+        SC().people.map((p) => {
           const v = season[m].metrics.perPerson[p.id][key];
           return v === null ? null : Math.round(sign * v * 10 ** digits) / 10 ** digits;
         });
       const ds = (label, data, color) => ({ label, data, backgroundColor: color, borderRadius: 3, borderSkipped: false, barPercentage: 0.9, categoryPercentage: 0.8 });
       return new Chart(document.getElementById(canvasId), {
         type: 'bar',
-        data: { labels: names, datasets: [ds('Optimizer', get('optimizer'), cOpt), ds('First come', get('firstCome'), cFc)] },
+        data: { labels: names, datasets: [ds(SM()[0][1], get('optimizer'), cOpt), ds(SM()[1][1], get('firstCome'), cFc)] },
         options: {
           indexAxis: 'y',
           maintainAspectRatio: false,
@@ -1065,6 +1187,8 @@ couple without a couple option → 2 best free beds</pre>
     setupSetup();
     renderModel();
     renderRegistrations();
+    renderSeasonHeader();
+    setupHistoryImport();
     document.getElementById('btn-season').disabled = true;
     document.getElementById('btn-season').addEventListener('click', runSeason);
     loadSolver();

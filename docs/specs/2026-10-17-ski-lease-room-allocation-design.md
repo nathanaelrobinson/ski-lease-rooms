@@ -100,3 +100,20 @@ Calendar and planning ahead:
 - A first version solved the window as one multi-week MIP. It took 10 to 60 seconds for a season and did not improve fairness, so the rollout replaced it.
 
 New measures: guest nights placed, guest nights with no bed, partner guests with host, and member on the floor while a guest has a bed.
+
+## Season calendar and history replay (added 2026-10-19)
+
+Calendar:
+
+- The calendar exists for the whole season. People enter weekends ahead of time. Some plans fall through, and some people come without a plan.
+- At noon on the Tuesday before a weekend, the registrations for that weekend lock. The solver knows that weekend exactly.
+- A plan k weeks out has a planner confidence of max(0.3, 1 − 0.12·k). The rollout scales the projected priority change of each member by that confidence.
+- The Season tab shows the calendar as it looked on any Tuesday, with a switch that shows which plans fell through and who came without a plan.
+
+History replay:
+
+- A script in the git-ignored private/ folder turns a past sign-up sheet into a history file: rooms, members (first names), and for each weekend the attendance, the guests, and the actual bed of each person on each night.
+- The Season tab loads the history file in the browser only. It runs the optimizer on the actual attendance and guests, and compares it with the actual beds on the same measures.
+- Real people sometimes changed beds between nights, so each stay in one bed is its own party in the actual result. The measures read beds per party.
+- Bed types king and full were added. A couple can share both. A king counts as a queen for the couple-first rule.
+- A host can bring more than one guest (guests[host].count).
