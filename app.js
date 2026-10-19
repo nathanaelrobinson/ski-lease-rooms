@@ -33,13 +33,16 @@
     ['floorNights', 'Floor nights', 'person-nights', true, 'Nights on a couch, an air mattress, or no bed.'],
     ['dominatedFloor', 'Avoidable floor', 'person-nights', true, 'Someone on the floor while a better bed was free for all of their nights, without a mixed-gender room.'],
     ['priorityInversion', 'Priority inversion', 'pairs', true, 'Two singles of the same gender on the same nights, and the one with lower priority got the better bed.'],
-    ['mixedRoom', 'Mixed-gender room', 'room-nights', true, 'A bedroom on a night shared by singles of different genders.'],
     ['coupleSplit', 'Couple split', 'couples', true, 'A couple that sleeps in two separate beds that are not a twin pair in one room.'],
     ['capExcess', 'Over couch cap', 'person-nights', true, 'Floor nights above the season couch cap.'],
     ['guestNights', 'Guest nights placed', 'guest-nights', false, 'Guest nights with a bed (shared with the host, or their own).'],
     ['guestNoBed', 'Guest nights, no bed', 'guest-nights', true, 'Guest nights with no bed left after all members were placed.'],
     ['partnerShared', 'Partner guest with host', 'hosts', false, 'Hosts whose partner guest shared their bed or a twin pair in their room.'],
     ['guestDisplace', 'Member on floor, guest in bed', 'person-nights', true, 'A member slept on the floor while a guest had a real bed that night. The optimizer never allows this.'],
+  ];
+  /* Preferences are goals in the objective, not issues. The page shows them without a better or worse mark. */
+  const PREFERENCES = [
+    ['mixedRoom', 'Mixed-gender room-nights', 'room-nights', null, 'Shared bedrooms with singles of different genders. The optimizer aims for same-gender rooms (Setup: Same-gender rooms) but trades it off against priority and floor nights. With few singles of one gender, some mixing is expected. Not counted as an issue.'],
   ];
   const GUEST_CHOICES = [
     ['', '–'],
@@ -66,7 +69,6 @@
     heldEmptyQueen: 'Held-empty queen',
     dominatedFloor: 'Avoidable floor',
     priorityInversion: 'Priority inversion',
-    mixedRoom: 'Mixed-gender room',
     coupleSplit: 'Couple split',
     capExcess: 'Over couch cap',
     guestNoBed: 'Guest without bed',
@@ -407,8 +409,14 @@
     return html + '</tbody></table>';
   }
 
-  function measureRows(co, cf) {
-    return MEASURES.map(([k, label, unit, lower, tip]) => [label, measureValue(co, k), measureValue(cf, k), k === 'util' ? '%' : unit, lower, 0, false, tip]);
+  function measureRows(co, cf, list = MEASURES) {
+    return list.map(([k, label, unit, lower, tip]) => [label, measureValue(co, k), measureValue(cf, k), k === 'util' ? '%' : unit, lower, 0, false, tip]);
+  }
+
+  /* Issues exclude the preferences. */
+  function issues(list) {
+    const prefs = new Set(PREFERENCES.map((p) => p[0]));
+    return list.filter((x) => !prefs.has(x.type));
   }
 
   function incidentRows(incidents, beds, withWeek) {
@@ -497,11 +505,11 @@
     const nightButtons = M.NIGHTS.map((x, i) => [i, `${x} <span class="free-n">${free[i]} free</span>`]);
 
     let html = `<div class="card"><div class="row"><h2>Optimizer vs first come</h2><span class="status mono">${attending.length} people · ${Object.keys(last.guests).length} guests · solved in ${Math.round(last.ms)} ms${o.result.stages && o.result.stages.some((x) => x.startsWith('S2')) ? ' · planned ahead' : ''}</span><div class="spacer"></div><button class="btn small" id="btn-reassign" data-tip="Solve again with a new random draw. Ties can come out differently.">Re-run</button></div>
-      <div class="cols wk-cols"><div>${compareTable([['Outcomes'], ...measureRows(o.outcomes.counts, f.outcomes.counts), ['Rotation'], ...fairRows], true)}</div>
+      <div class="cols wk-cols"><div>${compareTable([['Outcomes'], ...measureRows(o.outcomes.counts, f.outcomes.counts), ['Preferences'], ...measureRows(o.outcomes.counts, f.outcomes.counts, PREFERENCES), ['Rotation'], ...fairRows], true)}</div>
       <div><div class="row">${seg('plan-method', METHODS, weekend.view)}${seg('plan-night', nightButtons, weekend.night)}</div>
       ${roomsHtml(view.result, view.outcomes, weekend.night)}
       <div class="legend small"><span class="chip couple">AB</span>couple<span class="chip single">CD</span>single<span class="chip guest">GH+</span>guest<span class="chip couple held">EF</span>held for partner<span class="bed-key"></span>free bed</div>
-      <details ${view.outcomes.incidents.length ? 'open' : ''}><summary>Issues · ${weekend.view === 'optimizer' ? 'optimizer' : 'first come'} (${view.outcomes.incidents.length})</summary>${incidentRows(view.outcomes.incidents, beds, false)}</details>
+      <details ${issues(view.outcomes.incidents).length ? 'open' : ''}><summary>Issues · ${weekend.view === 'optimizer' ? 'optimizer' : 'first come'} (${issues(view.outcomes.incidents).length})</summary>${incidentRows(issues(view.outcomes.incidents), beds, false)}</details>
       </div></div></div>`;
 
     const order = [...attending].sort((a, b) => (last.state.balances[a] || 0) - (last.state.balances[b] || 0));
@@ -572,6 +580,8 @@
       ['Outcomes'],
       ...measureRows(o.outcomes, f.outcomes),
       ['Max floor nights, 1 person', maxFloor(o), maxFloor(f), cap === null ? 'nights' : `nights, cap ${cap}`, true, 0, false, TIPS.maxFloor],
+      ['Preferences'],
+      ...measureRows(o.outcomes, f.outcomes, PREFERENCES),
     ];
 
     let util = `<table class="mono tight util"><thead><tr><th></th><th class="c" colspan="3"><span class="key opt"></span>Opt</th><th class="c gap" colspan="3"><span class="key fc"></span>FC</th></tr><tr><th>Room</th>${METHODS.map((_, i) => M.NIGHTS.map((n, j) => `<th class="c ${i === 1 && j === 0 ? 'gap' : ''}">${n[0]}</th>`).join('')).join('')}</tr></thead><tbody>`;
@@ -615,7 +625,7 @@ host pays the guest's bed value in priority (unless shared bed)</pre>
     const beds = bedInfo();
     html += '<div class="card"><h2>Issues</h2>';
     for (const [m, title] of METHODS) {
-      const list = season[m].metrics.incidents;
+      const list = issues(season[m].metrics.incidents);
       html += `<details><summary>${title} (${list.length})</summary>${incidentRows(list, beds, true)}</details>`;
     }
     html += '</div>';
@@ -996,7 +1006,7 @@ Wasted queen     single in Q ∧ couple in 2 beds ∧ someone on floor
 Held-empty queen queen held for an absent partner
 Avoidable floor  floor while a better option was free (gender-safe)
 Priority inv.    same gender + nights, Δpriority > 1, lower priority has better bed
-Mixed room       bedroom-night, singles of 2 genders
+Mixed room       preference, not an issue: bedroom-night, singles of 2 genders
 Couple split     couple in 2 beds outside 1 twin room</pre>
 <h3>Stages</h3>
 <pre class="model mono">S0  members only, hosts alone        → member floor F0, no-bed N0
