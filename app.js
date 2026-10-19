@@ -490,6 +490,20 @@
       }
       html += '</div></div>';
     }
+    /* People with no bed on this night: no-bed nights, BYOB, or guests the sheet did not place. */
+    const noBed = [];
+    result.parties.forEach((p, pi) => {
+      for (const m of p.members) {
+        if (!p.memberNights[m].includes(n)) continue;
+        const b = result.choices[pi].assign[m];
+        if (b === M.OVERFLOW || b === undefined) noBed.push({ m, kind: p.kind });
+      }
+    });
+    if (noBed.length) {
+      html += `<div class="room nobed"><div class="room-h"><span>No bed</span><span class="mono muted">${noBed.length}</span></div><div class="beds">${noBed
+        .map(({ m, kind }) => `<span class="chip ${M.isGuest(m) ? 'guest' : kind === 'couple' ? 'couple' : 'single'}" data-tip="${esc(personName(m))} · no bed this night">${esc(initials(m))}</span>`)
+        .join('')}</div></div>`;
+    }
     return html + '</div>';
   }
 

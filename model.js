@@ -103,6 +103,16 @@
   }
 
   /*
+   * The nights of guest k. guests[host].nights (optional) lists the nights of each guest, for example
+   * from a past sign-up sheet. Without it, a guest stays for all the nights of the host.
+   */
+  function guestNights(g, k, hostNights) {
+    const list = g.nights && g.nights[k - 1];
+    if (!list || list.length === 0) return hostNights;
+    return hostNights.filter((n) => list.includes(n));
+  }
+
+  /*
    * Make the parties from the registrations and the guests.
    * kind = 'couple'      two members who both registered (nights = union)
    *        'single'      one member
@@ -143,7 +153,7 @@
           host: person.id,
           advance: !!g.advance,
           nights: sorted,
-          memberNights: { [person.id]: sorted, [gid]: sorted },
+          memberNights: { [person.id]: sorted, [gid]: guestNights(g, 1, sorted) },
         });
       } else {
         members.push({ id: `s_${person.id}`, kind: 'single', members: [person.id], nights: sorted, memberNights: { [person.id]: sorted } });
@@ -159,6 +169,8 @@
       const sorted = [...nights].sort();
       for (let k = first; k <= (g.count || 1); k++) {
         const gid = guestId(hostId, k);
+        const own = guestNights(g, k, sorted);
+        if (own.length === 0) continue;
         guestParties.push({
           id: `g_${hostId}_${k}`,
           kind: 'guest',
@@ -166,8 +178,8 @@
           advance: !!g.advance,
           members: [gid],
           host: hostId,
-          nights: sorted,
-          memberNights: { [gid]: sorted },
+          nights: own,
+          memberNights: { [gid]: own },
         });
       }
     }
@@ -615,7 +627,8 @@
         parties.push({ id: `s_${host}`, kind: 'single', members: [host], nights: party.nights, memberNights: { [host]: party.nights }, hadPartnerGuest: true });
         finalChoices.push({ beds: option.beds, assign: { [host]: option.assign[host] }, overflow: option.overflow });
         const gid = guestId(host);
-        s3Guests.push({ id: `g_${host}`, kind: 'guest', guestType: 'any', detachedPartner: true, advance: party.advance, members: [gid], host, nights: party.nights, memberNights: { [gid]: party.nights } });
+        const gn = party.memberNights[gid];
+        s3Guests.push({ id: `g_${host}`, kind: 'guest', guestType: 'any', detachedPartner: true, advance: party.advance, members: [gid], host, nights: gn, memberNights: { [gid]: gn } });
       } else {
         parties.push(party);
         finalChoices.push(option);
