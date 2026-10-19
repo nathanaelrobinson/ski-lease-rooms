@@ -538,7 +538,9 @@
       for (const n of party.nights) {
         for (const bedId of option.beds) {
           const sleepers = party.members.filter((m) => option.assign[m] === bedId && party.memberNights[m].includes(n));
-          plan[n][bedId] = { partyId: party.id, sleepers };
+          /* Actual data can put two stays in one bed on one night. Keep the first party and add the sleepers. */
+          if (plan[n][bedId]) plan[n][bedId].sleepers.push(...sleepers);
+          else plan[n][bedId] = { partyId: party.id, sleepers };
         }
       }
     });

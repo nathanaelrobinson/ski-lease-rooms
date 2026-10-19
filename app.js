@@ -463,19 +463,21 @@
    * Draw the rooms for one night. Each bed is a shape sized by type.
    * A chip shows a sleeper. A hollow chip shows a bed held for an absent partner.
    */
-  function roomsHtml(result, outcomes, n) {
+  function roomsHtml(result, outcomes, n, rooms = config.rooms) {
     let html = '<div class="plan">';
-    for (const room of config.rooms) {
+    for (const room of rooms) {
       const occ = outcomes.roomNights[room.id][n];
       html += `<div class="room ${room.common ? 'common' : ''}"><div class="room-h"><span>${esc(room.name)}</span><span class="mono muted">${occ.occupied}/${occ.total}</span></div><div class="beds">`;
       for (const bed of room.beds) {
         const cell = result.plan[n][bed.id];
         let chips = '';
         if (cell) {
-          const party = result.parties.find((p) => p.id === cell.partyId);
+          const pi = result.parties.findIndex((p) => p.id === cell.partyId);
+          const party = result.parties[pi];
           const cls = party.kind === 'couple' ? 'couple' : 'single';
-          for (const m of party.members) {
-            if (result.assignment[m] !== bed.id) continue;
+          /* Sleepers of this night first. A bed with no sleeper is held for a partner who arrives on another night. */
+          const shown = cell.sleepers.length ? cell.sleepers : party.members.filter((m) => result.choices[pi].assign[m] === bed.id);
+          for (const m of shown) {
             const here = cell.sleepers.includes(m);
             const c = M.isGuest(m) ? 'guest' : cls;
             chips += `<span class="chip ${c} ${here ? '' : 'held'}" data-tip="${esc(personName(m))}${here ? '' : ' · held, arrives another night'}">${esc(initials(m))}</span>`;
@@ -667,6 +669,7 @@
 
     let html = `<div class="card"><div class="cols"><div><h2>Metrics</h2>${compareTable(rows, false, SM())}<p class="sub mono">bold = better · hover ⓘ for definitions</p></div><div><h2>Room Utilization by Night</h2>${util}</div></div></div>`;
 
+    html += '<div class="card" id="week-detail"></div>';
     if (!season.history) html += '<div class="card" id="calendar-card"></div>';
 
     html += `<div class="card"><h2>Priority by Person and Weekend <span class="i" data-tip="${esc(TIPS.priority)}">ⓘ</span></h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· above 0 = due a better room · hover a line for the name</span></div>
@@ -691,10 +694,87 @@
     html += '</div>';
 
     out.innerHTML = html;
+    renderWeekDetail();
     if (!season.history) renderCalendar();
     drawSeasonCharts();
     renderGrid('optimizer');
     onSeg('grid-method', renderGrid);
+  }
+
+  /* The bed of a person on each night, read from the plan. A person can change beds between nights. */
+  function bedsByNight(result, id) {
+    return NL().map((_, n) => {
+      for (const [bedId, cell] of Object.entries(result.plan[n])) if (cell.sleepers.includes(id)) return bedId;
+      const party = result.parties.find((p) => p.members.includes(id) && p.memberNights[id].includes(n));
+      return party ? null : undefined;
+    });
+  }
+
+  /* Write the beds of one person over the weekend, for example "BR1 · king" or "Fri: Couch · Sat: BR2 · queen". */
+  function bedsText(beds, list) {
+    const shown = list.map((b, n) => [n, b]).filter(([, b]) => b !== undefined);
+    if (!shown.length) return '';
+    const name = (b) => (b === null ? 'No bed' : beds.get(b).name);
+    if (shown.every(([, b]) => b === shown[0][1])) return name(shown[0][1]);
+    return shown.map(([n, b]) => `${NL()[n]}: ${name(b)}`).join(' · ');
+  }
+
+  /*
+   * Zoom into one weekend: measures, the room drawing of both methods side by side, and who slept where.
+   */
+  const detail = { week: 0, night: 1 };
+  function renderWeekDetail() {
+    const el = document.getElementById('week-detail');
+    if (!el) return;
+    const [[mA, labelA], [mB, labelB]] = SM();
+    const wa = season[mA].weeks[detail.week];
+    const wb = season[mB].weeks[detail.week];
+    const beds = bedInfo(SC().rooms);
+    const rooms = SC().rooms;
+    const usedNights = NL().map((_, n) => [wa, wb].some((w) => w.result.parties.some((p) => p.nights.includes(n))));
+    if (!usedNights[detail.night]) detail.night = usedNights.indexOf(true) === -1 ? 0 : usedNights.indexOf(true);
+    const nightButtons = NL().map((x, i) => [i, x]).filter(([i]) => usedNights[i]);
+    const weekOptions = season.weekends.map((w, i) => `<option value="${i}" ${i === detail.week ? 'selected' : ''}>${esc(w.label)}</option>`).join('');
+
+    let html = `<div class="row"><h2>Weekend detail</h2><select id="wd-week">${weekOptions}</select>${seg('wd-night', nightButtons, detail.night)}
+      <span class="mono muted small">${Object.keys(wa.registrations).length} members · ${Object.values(wa.guests || {}).reduce((s, g) => s + (g.count || 1), 0)} guests · click a date in the bed grid to jump</span></div>`;
+    html += `<div class="cols wk-cols"><div>${compareTable([['This weekend'], ...measureRows(wa.outcomes.counts, wb.outcomes.counts), ['Preferences'], ...measureRows(wa.outcomes.counts, wb.outcomes.counts, PREFERENCES)], true, SM())}</div>
+      <div class="two"><div><h3><span class="key opt"></span>${esc(labelA)}</h3>${roomsHtml(wa.result, wa.outcomes, detail.night, rooms)}</div>
+      <div><h3><span class="key fc"></span>${esc(labelB)}</h3>${roomsHtml(wb.result, wb.outcomes, detail.night, rooms)}</div></div></div>`;
+
+    /* Who slept where, highest optimizer priority first. */
+    const ids = Object.keys(wa.registrations).sort((x, y) => (wa.balancesBefore[x] || 0) - (wa.balancesBefore[y] || 0));
+    html += `<h3 style="margin-top:10px">Who slept where</h3><div class="scroll"><table class="tight"><thead><tr><th>Person</th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th>Nights</th><th><span class="key opt"></span>${esc(labelA)}</th><th><span class="key fc"></span>${esc(labelB)}</th><th>Guests</th></tr></thead><tbody>`;
+    for (const id of ids) {
+      const p = person(id);
+      const a = bedsText(beds, bedsByNight(wa.result, id));
+      const b = bedsText(beds, bedsByNight(wb.result, id));
+      const g = (wa.guests || {})[id];
+      let guestCell = '';
+      if (g) {
+        const n = g.count || 1;
+        const where = (w) => {
+          const list = [];
+          for (let k = 1; k <= n; k++) {
+            const t = bedsText(beds, bedsByNight(w.result, M.guestId(id, k)));
+            if (t) list.push(t);
+          }
+          return list.join('; ') || 'no bed';
+        };
+        guestCell = `<span class="chip guest sm">+</span>${n} · <span data-tip="${esc(labelA)}: ${esc(where(wa))} | ${esc(labelB)}: ${esc(where(wb))}">${esc(where(wa))}</span>`;
+      }
+      html += `<tr><td><span class="dot ${p && p.partnerId ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(-(wa.balancesBefore[id] || 0))}</td><td class="mono nw">${nightsText(wa.registrations[id], NL())}</td><td>${esc(a)}</td><td class="${a === b ? 'muted' : ''}">${esc(b)}</td><td class="small">${guestCell}</td></tr>`;
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+    document.getElementById('wd-week').addEventListener('change', (e) => {
+      detail.week = Number(e.target.value);
+      renderWeekDetail();
+    });
+    onSeg('wd-night', (v) => {
+      detail.night = Number(v);
+      renderWeekDetail();
+    });
   }
 
   /*
@@ -762,7 +842,7 @@
     const run = season[method];
     const beds = bedInfo(SC().rooms);
     let html = '<table class="heat"><thead><tr><th style="text-align:left">Person</th>';
-    for (const w of season.weekends) html += `<th>${esc(w.label)}</th>`;
+    for (const w of season.weekends) html += `<th class="wk-link" data-week="${w.index}" data-tip="Open this weekend in Weekend detail">${esc(w.label)}</th>`;
     html += `<th class="num"><span data-tip="Priority per night at the end of the season. Above 0 = due a better room.">Priority ⓘ</span></th></tr></thead><tbody>`;
     for (const p of SC().people) {
       html += `<tr><td class="name"><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
@@ -785,6 +865,13 @@
     }
     html += '</tbody></table>';
     document.getElementById('grid').innerHTML = html;
+    for (const th of document.querySelectorAll('#grid th.wk-link')) {
+      th.addEventListener('click', () => {
+        detail.week = Number(th.dataset.week);
+        renderWeekDetail();
+        document.getElementById('week-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
   }
 
   /* Draw the value of each bar at the end of the bar. */
