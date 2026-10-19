@@ -24,24 +24,35 @@
     air_queen: 'Air queen',
     air_twin: 'Air twin',
   };
-  const TYPE_SHORT = { queen: 'Q', twin: 'T', bunk_bottom: 'B↓', bunk_top: 'B↑', couch: 'C', air_queen: 'AQ', air_twin: 'AT' };
-  /* Outcome measures: key, label, unit, and true if a lower number is better. */
+  /* Outcome measures: key, label, unit, true if a lower number is better, and the hover text. */
   const MEASURES = [
-    ['util', 'Bedroom utilization', 'sleeping spaces', false],
-    ['singleQueen', 'Single in queen', 'queen-nights', true],
-    ['wastedQueen', 'Wasted queen', 'queen-nights', true],
-    ['heldEmptyQueen', 'Held-empty queen', 'queen-nights', true],
-    ['floorNights', 'Floor nights', 'person-nights', true],
-    ['dominatedFloor', 'Dominated floor', 'person-nights', true],
-    ['priorityInversion', 'Priority inversion', 'pairs', true],
-    ['mixedRoom', 'Mixed-gender room', 'room-nights', true],
-    ['coupleSplit', 'Couple split', 'couple-weekends', true],
-    ['capExcess', 'Over couch cap', 'person-nights', true],
+    ['util', 'Bedroom utilization', 'spaces', false, 'Share of bedroom sleeping spaces in use. A queen counts as 2 spaces, so one person alone in a queen uses half of it.'],
+    ['singleQueen', 'Single in queen', 'queen-nights', true, 'Nights where one person sleeps alone in a queen.'],
+    ['wastedQueen', 'Wasted queen', 'queen-nights', true, 'One person alone in a queen while a couple uses two beds and someone sleeps on the floor that night. The queen cost the house a bed.'],
+    ['heldEmptyQueen', 'Held-empty queen', 'queen-nights', true, 'A queen kept empty for a partner who arrives on a later night.'],
+    ['floorNights', 'Floor nights', 'person-nights', true, 'Nights on a couch, an air mattress, or no bed.'],
+    ['dominatedFloor', 'Avoidable floor', 'person-nights', true, 'Someone on the floor while a better bed was free for all of their nights, without a mixed-gender room.'],
+    ['priorityInversion', 'Priority inversion', 'pairs', true, 'Two singles of the same gender on the same nights, and the luckier one got the better bed.'],
+    ['mixedRoom', 'Mixed-gender room', 'room-nights', true, 'A bedroom on a night shared by singles of different genders.'],
+    ['coupleSplit', 'Couple split', 'couples', true, 'A couple that sleeps in two separate beds that are not a twin pair in one room.'],
+    ['capExcess', 'Over couch cap', 'person-nights', true, 'Floor nights above the season couch cap.'],
   ];
+  const TIPS = {
+    luck: 'Luck = bed quality a person got above the average of their group (couples or singles), added up over past weekends. Low luck = higher priority for the good beds.',
+    priority: 'Priority multiplier from luck. It multiplies the bed quality in the optimizer, so low-luck people win the better beds.',
+    floor: 'Floor nights so far this season: couch, air mattress, or no bed.',
+    rotation: 'Correlation between luck before the weekend and bed quality, singles only. Negative = the unlucky got the better beds.',
+    stdev: 'How far luck per night spreads around zero across people. Lower = more even.',
+    range: 'Luck per night of the luckiest person minus the unluckiest (people with 4 or more nights).',
+    flex: 'Luck gap between singles with flexible schedules and other singles. Near 0 = no sign-up advantage.',
+    meanCouple: 'Average bed quality per night for couple members.',
+    meanSingle: 'Average bed quality per night for singles.',
+    maxFloor: 'Most floor nights for any one person in the season.',
+  };
   const INCIDENT_LABELS = {
     wastedQueen: 'Wasted queen',
     heldEmptyQueen: 'Held-empty queen',
-    dominatedFloor: 'Dominated floor',
+    dominatedFloor: 'Avoidable floor',
     priorityInversion: 'Priority inversion',
     mixedRoom: 'Mixed-gender room',
     coupleSplit: 'Couple split',
@@ -233,20 +244,16 @@
   function renderRegistrations() {
     const { balances, floorNights } = currentState();
     document.getElementById('weekend-sub').textContent =
-      weekend.mode === 'fresh' ? `${weekendLabel()} · bal = 0` : `${weekendLabel()} · after ${S.MID_SEASON_WEEKENDS} wk`;
+      weekend.mode === 'fresh' ? `${weekendLabel()} · everyone starts even` : `${weekendLabel()} · luck from ${S.MID_SEASON_WEEKENDS} simulated weekends`;
 
-    const ranked = config.people.map((p) => ({ id: p.id, bal: balances[p.id] || 0 })).sort((a, b) => a.bal - b.bal);
-    const rank = new Map(ranked.map((r, i) => [r.id, i + 1]));
-    const cap = S.capSetting(config.settings);
-
-    let html = `<thead><tr><th>Person</th>${M.NIGHTS.map((n) => `<th class="c">${n[0]}</th>`).join('')}<th class="num">Bal</th><th class="num" title="Floor nights so far">Fl${cap === null ? '' : `/${cap}`}</th><th class="num">#</th></tr></thead><tbody>`;
+    let html = `<thead><tr><th>Person</th>${M.NIGHTS.map((n) => `<th class="c">${n}</th>`).join('')}<th class="num"><span data-tip="${esc(TIPS.luck)}">Luck ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.floor)}">Floor ⓘ</span></th></tr></thead><tbody>`;
     for (const p of config.people) {
       const reg = weekend.registrations[p.id] || [];
       html += `<tr><td><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
       for (let n = 0; n < 3; n++) {
         html += `<td class="c"><input type="checkbox" data-person="${esc(p.id)}" data-night="${n}" ${reg.includes(n) ? 'checked' : ''} aria-label="${esc(p.name)} ${NIGHT_NAMES[n]}"></td>`;
       }
-      html += `<td class="num">${fmt(balances[p.id] || 0)}</td><td class="num">${floorNights[p.id] || 0}</td><td class="num muted">${weekend.mode === 'fresh' ? '–' : rank.get(p.id)}</td></tr>`;
+      html += `<td class="num">${fmt(balances[p.id] || 0)}</td><td class="num">${floorNights[p.id] || 0}</td></tr>`;
     }
     html += '</tbody>';
     const table = document.getElementById('reg-table');
@@ -331,35 +338,37 @@
     return lower ? (vo < vf ? 'o' : 'f') : vo > vf ? 'o' : 'f';
   }
 
-  function compareRow(label, vo, vf, unit, lower, digits, signed, noUnit) {
+  function compareRow(label, vo, vf, unit, lower, digits, signed, noUnit, tip) {
     const b = better(vo, vf, lower);
     const show = (v) => (signed ? fmt(v, digits) : plain(v, digits)) + (unit === '%' ? '%' : '');
     const delta = vo === null || vf === null ? '–' : fmt(vo - vf, digits);
-    return `<tr><td>${label}</td><td class="num ${b === 'o' ? 'win' : ''}">${show(vo)}</td><td class="num ${b === 'f' ? 'win' : ''}">${show(vf)}</td><td class="num muted">${delta}</td>${noUnit ? '' : `<td class="muted mono unit">${unit === '%' ? '' : unit}</td>`}</tr>`;
+    const name = tip ? `<span data-tip="${esc(tip)}">${label} <span class="i">ⓘ</span></span>` : label;
+    return `<tr><td>${name}</td><td class="num ${b === 'o' ? 'win' : ''}">${show(vo)}</td><td class="num ${b === 'f' ? 'win' : ''}">${show(vf)}</td><td class="num muted">${delta}</td>${noUnit ? '' : `<td class="muted mono unit">${unit === '%' ? '' : unit}</td>`}</tr>`;
   }
 
+  /* Each row: [label, optimizer value, first-come value, unit, lower is better, digits, signed, hover text]. */
   function compareTable(rows, noUnit) {
-    let html = `<table class="metrics"><thead><tr><th>Measure</th><th class="num"><span class="key opt"></span>Opt</th><th class="num"><span class="key fc"></span>FC</th><th class="num">Δ</th>${noUnit ? '' : '<th></th>'}</tr></thead><tbody>`;
+    let html = `<table class="metrics"><thead><tr><th>Measure</th><th class="num"><span class="key opt"></span>Optimizer</th><th class="num"><span class="key fc"></span>First come</th><th class="num">Δ</th>${noUnit ? '' : '<th></th>'}</tr></thead><tbody>`;
     for (const r of rows) {
       if (r.length === 1) html += `<tr class="group"><td colspan="5">${r[0]}</td></tr>`;
-      else html += compareRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], noUnit);
+      else html += compareRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], noUnit, r[7]);
     }
     return html + '</tbody></table>';
   }
 
   function measureRows(co, cf) {
-    return MEASURES.map(([k, label, unit, lower]) => [label, measureValue(co, k), measureValue(cf, k), k === 'util' ? '%' : unit, lower, 0, false]);
+    return MEASURES.map(([k, label, unit, lower, tip]) => [label, measureValue(co, k), measureValue(cf, k), k === 'util' ? '%' : unit, lower, 0, false, tip]);
   }
 
   function incidentRows(incidents, beds, withWeek) {
     if (incidents.length === 0) return '<p class="sub mono">none</p>';
-    let html = `<div class="scroll"><table class="mono tight"><thead><tr>${withWeek ? '<th>Wk</th>' : ''}<th>N</th><th>Type</th><th>People</th><th>Detail</th></tr></thead><tbody>`;
+    let html = `<div class="scroll"><table class="mono tight"><thead><tr>${withWeek ? '<th>Weekend</th>' : ''}<th>Night</th><th>Type</th><th>People</th><th>Where</th></tr></thead><tbody>`;
     for (const x of incidents) {
       const detail = String(x.detail || '')
         .split('+')
         .map((id) => (beds.has(id) ? beds.get(id).name : (config.rooms.find((r) => r.id === id) || { name: id }).name))
         .join(' + ');
-      html += `<tr>${withWeek ? `<td>${esc(season.weekends[x.week].label)}</td>` : ''}<td>${x.night === null ? '·' : M.NIGHTS[x.night][0]}</td><td>${esc(INCIDENT_LABELS[x.type] || x.type)}</td><td>${esc(x.people.map(personName).join(', '))}</td><td>${esc(detail)}</td></tr>`;
+      html += `<tr>${withWeek ? `<td>${esc(season.weekends[x.week].label)}</td>` : ''}<td>${x.night === null ? 'all' : M.NIGHTS[x.night]}</td><td>${esc(INCIDENT_LABELS[x.type] || x.type)}</td><td>${esc(x.people.map(personName).join(', '))}</td><td>${esc(detail)}</td></tr>`;
     }
     return html + '</tbody></table></div>';
   }
@@ -382,10 +391,10 @@
           for (const m of party.members) {
             if (result.assignment[m] !== bed.id) continue;
             const here = cell.sleepers.includes(m);
-            chips += `<span class="chip ${cls} ${here ? '' : 'held'}" title="${esc(personName(m))}${here ? '' : ' (held)'}">${esc(initials(m))}</span>`;
+            chips += `<span class="chip ${cls} ${here ? '' : 'held'}" data-tip="${esc(personName(m))}${here ? '' : ' · held, arrives another night'}">${esc(initials(m))}</span>`;
           }
         }
-        html += `<div class="bed t-${bed.type} ${cell ? '' : 'free'}" title="${esc(TYPE_LABELS[bed.type])} · ${bed.value}"><span class="bv">${TYPE_SHORT[bed.type]}${bed.value}</span>${chips}</div>`;
+        html += `<div class="bed t-${bed.type} ${cell ? '' : 'free'}" data-tip="${esc(TYPE_LABELS[bed.type])}${cell ? '' : ' · free'}">${chips}</div>`;
       }
       html += '</div></div>';
     }
@@ -431,28 +440,27 @@
     const f = last.firstCome;
     const view = last[weekend.view];
     const attending = o.result.parties.flatMap((p) => p.members);
-    const fairRows = [['Bal–value r, singles', balanceCorrelation(o, last.state.balances), balanceCorrelation(f, last.state.balances), 'r · negative = rotates', true, 2, true]];
+    const fairRows = [['Rotation (r)', balanceCorrelation(o, last.state.balances), balanceCorrelation(f, last.state.balances), 'r', true, 2, true, TIPS.rotation]];
     const free = view.result.freeBeds.map((list) => list.length);
+    const nightButtons = M.NIGHTS.map((x, i) => [i, `${x} <span class="free-n">${free[i]} free</span>`]);
 
-    let html = `<div class="card"><div class="row"><h2>Optimizer vs first come</h2><span class="status mono">run ${weekend.runs} · ${Math.round(last.ms)} ms · ${attending.length} ppl · obj ${plain(o.result.objective, 0)}</span><div class="spacer"></div><button class="btn small" id="btn-reassign">Re-run</button></div>
+    let html = `<div class="card"><div class="row"><h2>Optimizer vs first come</h2><span class="status mono">${attending.length} people · solved in ${Math.round(last.ms)} ms</span><div class="spacer"></div><button class="btn small" id="btn-reassign" data-tip="Solve again with a new random draw. Ties can come out differently.">Re-run</button></div>
       <div class="cols wk-cols"><div>${compareTable([['Outcomes'], ...measureRows(o.outcomes.counts, f.outcomes.counts), ['Rotation'], ...fairRows], true)}</div>
-      <div><div class="row">${seg('plan-method', METHODS, weekend.view)}${seg('plan-night', M.NIGHTS.map((x, i) => [i, x]), weekend.night)}<div class="spacer"></div><span class="mono muted small">open ${M.NIGHTS.map((x, i) => `${x[0]} ${free[i]}`).join(' · ')}</span></div>
+      <div><div class="row">${seg('plan-method', METHODS, weekend.view)}${seg('plan-night', nightButtons, weekend.night)}</div>
       ${roomsHtml(view.result, view.outcomes, weekend.night)}
-      <div class="legend small"><span class="chip couple">AB</span>couple<span class="chip single">CD</span>single<span class="chip couple held">EF</span>held for partner<span class="bed-key"></span>open<span class="muted mono">· Q queen · T twin · B↓/B↑ bunk · C couch · A air · number = value</span></div>
-      <details ${view.outcomes.incidents.length ? 'open' : ''}><summary>Incidents · ${weekend.view === 'optimizer' ? 'Opt' : 'FC'} (${view.outcomes.incidents.length})</summary>${incidentRows(view.outcomes.incidents, beds, false)}</details>
+      <div class="legend small"><span class="chip couple">AB</span>couple<span class="chip single">CD</span>single<span class="chip couple held">EF</span>held for partner<span class="bed-key"></span>free bed</div>
+      <details ${view.outcomes.incidents.length ? 'open' : ''}><summary>Issues · ${weekend.view === 'optimizer' ? 'optimizer' : 'first come'} (${view.outcomes.incidents.length})</summary>${incidentRows(view.outcomes.incidents, beds, false)}</details>
       </div></div></div>`;
 
     const order = [...attending].sort((a, b) => (last.state.balances[a] || 0) - (last.state.balances[b] || 0));
-    html += '<div class="card"><h3>Assignments by priority</h3><div class="scroll"><table class="tight"><thead><tr><th>#</th><th>Person</th><th class="num">Bal₀</th><th class="num">w</th><th>N</th><th><span class="key opt"></span>Opt bed</th><th class="num">v</th><th class="num">Bal₁</th><th><span class="key fc"></span>FC bed</th><th class="num">v</th></tr></thead><tbody>';
+    html += `<div class="card"><h3>Who got what, lowest luck first</h3><div class="scroll"><table class="tight"><thead><tr><th>#</th><th>Person</th><th class="num"><span data-tip="${esc(TIPS.luck)}">Luck ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th>Nights</th><th><span class="key opt"></span>Optimizer</th><th class="num">Luck after</th><th><span class="key fc"></span>First come</th></tr></thead><tbody>`;
     order.forEach((id, i) => {
       const party = o.result.parties.find((p) => p.members.includes(id));
-      const cell = (run) => {
+      const bedName = (run) => {
         const bedId = run.result.assignment[id];
-        return bedId === M.OVERFLOW ? ['No bed', 0] : [beds.get(bedId).name, beds.get(bedId).value];
+        return bedId === M.OVERFLOW ? 'No bed' : beds.get(bedId).name;
       };
-      const [ob, ov] = cell(o);
-      const [fb, fv] = cell(f);
-      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(last.state.balances[id] || 0)}</td><td class="num">${plain(o.result.weights[id], 2)}</td><td class="mono">${nightsText(party.memberNights[id])}</td><td>${esc(ob)}</td><td class="num">${ov}</td><td class="num">${fmt(o.update.balances[id])}</td><td class="muted">${esc(fb)}</td><td class="num muted">${fv}</td></tr>`;
+      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(last.state.balances[id] || 0)}</td><td class="num">×${plain(o.result.weights[id], 1)}</td><td class="mono">${party.memberNights[id].map((n) => M.NIGHTS[n]).join(' ')}</td><td>${esc(bedName(o))}</td><td class="num">${fmt(o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td></tr>`;
     });
     html += '</tbody></table></div></div>';
     out.innerHTML = html;
@@ -496,14 +504,14 @@
 
     const rows = [
       ['Fairness'],
-      ['σ advantage', o.stdev, f.stdev, 'pts/night', true, 2, false],
-      ['Advantage range', o.spread, f.spread, `pts, ≥${o.minNights} nights`, true, 2, false],
-      ['Flexible − other singles', gap(o, 'flexibleSinglesAvg', 'otherSinglesAvg'), gap(f, 'flexibleSinglesAvg', 'otherSinglesAvg'), 'pts/night', 'abs', 2, true],
-      ['Mean bed value, couples', meanValue(o, (p) => !!p.partnerId), meanValue(f, (p) => !!p.partnerId), 'pts/night', null, 2, false],
-      ['Mean bed value, singles', meanValue(o, (p) => !p.partnerId), meanValue(f, (p) => !p.partnerId), 'pts/night', null, 2, false],
+      ['Luck spread (σ)', o.stdev, f.stdev, 'per night', true, 2, false, TIPS.stdev],
+      ['Luck range', o.spread, f.spread, 'per night', true, 2, false, TIPS.range],
+      ['Flexible-schedule edge', gap(o, 'flexibleSinglesAvg', 'otherSinglesAvg'), gap(f, 'flexibleSinglesAvg', 'otherSinglesAvg'), 'per night', 'abs', 2, true, TIPS.flex],
+      ['Bed quality, couples', meanValue(o, (p) => !!p.partnerId), meanValue(f, (p) => !!p.partnerId), 'per night', null, 1, false, TIPS.meanCouple],
+      ['Bed quality, singles', meanValue(o, (p) => !p.partnerId), meanValue(f, (p) => !p.partnerId), 'per night', null, 1, false, TIPS.meanSingle],
       ['Outcomes'],
       ...measureRows(o.outcomes, f.outcomes),
-      ['Max floor nights, 1 person', maxFloor(o), maxFloor(f), cap === null ? 'nights' : `nights, cap ${cap}`, true, 0, false],
+      ['Max floor nights, 1 person', maxFloor(o), maxFloor(f), cap === null ? 'nights' : `nights, cap ${cap}`, true, 0, false, TIPS.maxFloor],
     ];
 
     let util = `<table class="mono tight util"><thead><tr><th></th><th class="c" colspan="3"><span class="key opt"></span>Opt</th><th class="c gap" colspan="3"><span class="key fc"></span>FC</th></tr><tr><th>Room</th>${METHODS.map((_, i) => M.NIGHTS.map((n, j) => `<th class="c ${i === 1 && j === 0 ? 'gap' : ''}">${n[0]}</th>`).join('')).join('')}</tr></thead><tbody>`;
@@ -518,25 +526,25 @@
       });
       util += '</tr>';
     }
-    util += '</tbody></table><p class="sub mono">% of sleeping spaces used, all weekends · queen = 2</p>';
+    util += '</tbody></table><p class="sub mono">% of sleeping spaces used over the season · queen = 2 spaces</p>';
 
-    let html = `<div class="card"><div class="cols"><div><h2>Metrics</h2>${compareTable(rows)}<p class="sub mono">advantage = (v − pool mean) / nights · pools: couple, single · bold = better</p></div><div><h2>Room Utilization by Night</h2>${util}</div></div></div>`;
+    let html = `<div class="card"><div class="cols"><div><h2>Metrics</h2>${compareTable(rows)}<p class="sub mono">bold = better · hover ⓘ for definitions</p></div><div><h2>Room Utilization by Night</h2>${util}</div></div></div>`;
 
-    html += `<div class="card"><h2>Running Balance by Person and Weekend</h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· points vs own pool · hover for name</span></div>
+    html += `<div class="card"><h2>Luck by Person and Weekend <span class="i" data-tip="${esc(TIPS.luck)}">ⓘ</span></h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· near 0 = fair share · hover a line for the name</span></div>
       <div class="two"><div><h3>Optimizer</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-o"></canvas></div></div>
       <div><h3>First come</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><div class="two"><div><h2>Advantage per Night by Person</h2><div class="legend small"><span class="key opt"></span>Opt<span class="key fc"></span>FC<span class="muted mono">· (F) flexible · nights</span></div>
+    html += `<div class="card"><div class="two"><div><h2>Luck per Night by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· (F) flexible schedule · nights stayed</span></div>
       <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-adv"></canvas></div></div>
-      <div><h2>Floor Nights by Person</h2><div class="legend small"><span class="key opt"></span>Opt<span class="key fc"></span>FC<span class="muted mono">· couch, air, no bed</span></div>
+      <div><h2>Floor Nights by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· couch, air mattress, no bed</span></div>
       <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-floor"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><div class="row"><h2>Bed Value by Person and Weekend</h2><span class="mono muted small">mean v over the nights · hover for bed</span><div class="spacer"></div>${seg('grid-method', METHODS, 'optimizer')}</div>
+    html += `<div class="card"><div class="row"><h2>Bed Quality by Person and Weekend</h2><span class="mono muted small">0–10 · hover a cell for the bed</span><div class="spacer"></div>${seg('grid-method', METHODS, 'optimizer')}</div>
       <div class="scroll" id="grid"></div>
       <div class="scale">0 ${RAMP.filter((_, i) => i % 2 === 0).map((c) => `<i style="background:${c}"></i>`).join('')} 10</div></div>`;
 
     const beds = bedInfo();
-    html += '<div class="card"><h2>Incidents</h2>';
+    html += '<div class="card"><h2>Issues</h2>';
     for (const [m, title] of METHODS) {
       const list = season[m].metrics.incidents;
       html += `<details><summary>${title} (${list.length})</summary>${incidentRows(list, beds, true)}</details>`;
@@ -554,7 +562,7 @@
     const beds = bedInfo();
     let html = '<table class="heat"><thead><tr><th style="text-align:left">Person</th>';
     for (const w of season.weekends) html += `<th>${esc(w.label)}</th>`;
-    html += '<th class="num">Adv</th></tr></thead><tbody>';
+    html += `<th class="num"><span data-tip="Luck per night over the season">Luck ⓘ</span></th></tr></thead><tbody>`;
     for (const p of config.people) {
       html += `<tr><td class="name"><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
       run.weeks.forEach((week) => {
@@ -652,7 +660,7 @@
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmt(c.parsed.y)}` } } },
           scales: {
             x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, title: axisTitle('Weekend (Thursday date)', text2) },
-            y: { min: Math.floor(lo - pad), max: Math.ceil(hi + pad), grid: { color: grid }, title: axisTitle('Balance (points)', text2) },
+            y: { min: Math.floor(lo - pad), max: Math.ceil(hi + pad), grid: { color: grid }, title: axisTitle('Luck (points)', text2) },
           },
         },
       });
@@ -669,7 +677,7 @@
       const ds = (label, data, color) => ({ label, data, backgroundColor: color, borderRadius: 3, borderSkipped: false, barPercentage: 0.9, categoryPercentage: 0.8 });
       return new Chart(document.getElementById(canvasId), {
         type: 'bar',
-        data: { labels: names, datasets: [ds('Opt', get('optimizer'), cOpt), ds('FC', get('firstCome'), cFc)] },
+        data: { labels: names, datasets: [ds('Optimizer', get('optimizer'), cOpt), ds('First come', get('firstCome'), cFc)] },
         options: {
           indexAxis: 'y',
           maintainAspectRatio: false,
@@ -684,34 +692,41 @@
         plugins: [barValues],
       });
     };
-    charts.adv = hbar('ch-adv', 'advantage', 2, 'Advantage per night (points)');
+    charts.adv = hbar('ch-adv', 'advantage', 2, 'Luck per night (points)');
     charts.floor = hbar('ch-floor', 'floorNights', 0, 'Floor nights (count)');
   }
 
   /* Setup */
 
+  /* Each setting has named levels. A level maps to one number in the configuration. */
+  const SETTING_LEVELS = [
+    ['strength', 'Rotation', 'How hard the optimizer gives the good beds to people with low luck. Off = only bed quality counts. Max = luck almost decides alone.', [['Off', 0], ['Gentle', 1], ['Strong', 2], ['Max', 3.5]]],
+    ['noise', 'Randomness', 'A small random tie-breaker. It makes equal choices come out differently each week, so the plan is not the same every time.', [['None', 0], ['Low', 0.75], ['Med', 1.5], ['High', 3]]],
+    ['genderPenalty', 'Same-gender rooms', 'How much the optimizer avoids shared rooms with singles of different genders. Strong can send someone to the couch to avoid a mixed room.', [['Ignore', 0], ['Prefer', 3], ['Strong', 8]]],
+  ];
+
+  function nearestLevel(levels, value) {
+    let best = levels[0];
+    for (const l of levels) if (Math.abs(l[1] - value) < Math.abs(best[1] - value)) best = l;
+    return best[1];
+  }
+
   function renderSettings() {
     const s = config.settings;
-    const sliders = [
-      ['strength', 's · rotation', 0, 4, 0.5, 'w = exp(−s · bal / 6). 0 = no rotation.'],
-      ['noise', 'ε max · noise', 0, 5, 0.5, 'ε ~ U(0, max), bed value points.'],
-      ['genderPenalty', 'G · gender', 0, 10, 1, 'Cost per mixed-gender room-night.'],
-    ];
     let html = '<div class="settings">';
-    for (const [key, label, min, max, step, help] of sliders) {
-      html += `<label title="${esc(help)}"><span>${label} <b class="mono" id="val-${key}">${s[key]}</b></span><input type="range" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${s[key]}"></label>`;
+    for (const [key, label, tip, levels] of SETTING_LEVELS) {
+      html += `<div class="set"><span class="set-l" data-tip="${esc(tip)}">${label} <span class="i">ⓘ</span></span>${seg(`set-${key}`, levels.map(([l, v]) => [v, l]), nearestLevel(levels, Number(s[key])))}</div>`;
     }
     const cap = S.capSetting(s);
-    html += `<label title="Floor nights per person per season: couch, air mattress, or no bed. Blank = off."><span>Couch cap</span><input type="number" id="set-cap" min="0" step="1" value="${cap === null ? '' : cap}" placeholder="off"></label>`;
-    html += `<label><span>Seed</span><input type="number" id="set-seed" value="${s.seed}"></label></div>`;
+    html += `<div class="set"><span class="set-l" data-tip="Most floor nights (couch, air mattress, no bed) per person per season. The optimizer goes over only if there is no other way. Blank = off.">Couch cap <span class="i">ⓘ</span></span><input type="number" id="set-cap" min="0" step="1" value="${cap === null ? '' : cap}" placeholder="off"></div>`;
+    html += `<div class="set"><span class="set-l" data-tip="Fixes the random attendance and tie-breaks, so the same seed gives the same season.">Seed <span class="i">ⓘ</span></span><input type="number" id="set-seed" value="${s.seed}"></div></div>`;
     const el = document.getElementById('settings');
     el.innerHTML = html;
-    for (const input of el.querySelectorAll('input[type="range"]')) {
-      input.addEventListener('input', () => {
-        config.settings[input.dataset.key] = Number(input.value);
-        document.getElementById(`val-${input.dataset.key}`).textContent = input.value;
+    for (const [key] of SETTING_LEVELS) {
+      onSeg(`set-${key}`, (v) => {
+        config.settings[key] = Number(v);
+        configChanged();
       });
-      input.addEventListener('change', configChanged);
     }
     document.getElementById('set-cap').addEventListener('change', (e) => {
       const v = e.target.value.trim();
@@ -885,7 +900,7 @@ gM, gF, z[r,n] ∈ {0,1}   room r, night n: male / female single / both</pre>
              − 300·capExcess − 10000·nobed )
     − G·Σ z[r,n]
 
-w_m = clamp(exp(−s·bal_m / 6), 1/50, 50)
+w_m = clamp(exp(−s·luck_m / 6), 1/50, 50)     (priority)
 ε_o ~ U(0, ε max)</pre>
 </div><div>
 <h3>Constraints</h3>
@@ -893,17 +908,17 @@ w_m = clamp(exp(−s·bal_m / 6), 1/50, 50)
 Σ { y[p,o] : b ∈ o, n ∈ nights(p) } ≤ 1  ∀ b, n
 y[p,o] ≤ gM[r,n]  (male single in r, n); same for gF
 gM + gF − z ≤ 1                        ∀ bedroom r, n</pre>
-<h3>Balance</h3>
+<h3>Luck</h3>
 <pre class="model mono">pool = couple | single  (per weekend)
-bal_m += v_m,n − mean_pool,n(v)     ∀ nights of m
-Σ_pool Δbal = 0  per night</pre>
+luck_m += v_m,n − mean_pool,n(v)    ∀ nights of m
+Σ_pool Δluck = 0  per night</pre>
 <h3>Measures</h3>
 <pre class="model mono">Utilization      sleepers / spaces (queen = 2), bedrooms
 Single in queen  queen-night, 1 sleeper
 Wasted queen     single in Q ∧ couple in 2 beds ∧ someone on floor
 Held-empty queen queen held for an absent partner
-Dominated floor  floor while a better option was free (gender-safe)
-Priority inv.    same gender + nights, Δbal > 1, richer has better bed
+Avoidable floor  floor while a better option was free (gender-safe)
+Priority inv.    same gender + nights, Δluck > 1, luckier has better bed
 Mixed room       bedroom-night, singles of 2 genders
 Couple split     couple in 2 beds outside 1 twin room</pre>
 <h3>First come</h3>
@@ -912,9 +927,43 @@ couple without a couple option → 2 best free beds</pre>
 </div></div>`;
   }
 
+  /*
+   * Show one floating hover box for any element with a data-tip attribute.
+   * The box is fixed to the page, so a scroll area cannot cut it off.
+   */
+  function setupTips() {
+    const box = document.createElement('div');
+    box.className = 'tipbox';
+    document.body.appendChild(box);
+    let current = null;
+    document.addEventListener('mouseover', (e) => {
+      const el = e.target.closest('[data-tip]');
+      if (!el) {
+        box.style.display = 'none';
+        current = null;
+        return;
+      }
+      if (el === current) return;
+      current = el;
+      box.textContent = el.dataset.tip;
+      box.style.display = 'block';
+      const r = el.getBoundingClientRect();
+      const w = box.offsetWidth;
+      const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+      const below = r.bottom + 6 + box.offsetHeight < window.innerHeight;
+      box.style.left = `${left}px`;
+      box.style.top = `${below ? r.bottom + 6 : r.top - box.offsetHeight - 6}px`;
+    });
+    window.addEventListener('scroll', () => {
+      box.style.display = 'none';
+      current = null;
+    }, { passive: true });
+  }
+
   /* Start */
 
   function start() {
+    setupTips();
     setupTabs();
     setupWeekend();
     setupSetup();

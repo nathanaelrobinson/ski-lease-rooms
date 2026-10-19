@@ -170,7 +170,7 @@
         const gap = (balances[a] || 0) - (balances[b] || 0);
         if (gap > INVERSION_GAP && valueOf(result.assignment[a]) > valueOf(result.assignment[b])) {
           counts.priorityInversion++;
-          add('priorityInversion', null, [a, b], `Δbal ${gap.toFixed(1)}`);
+          add('priorityInversion', null, [a, b], `luck gap ${gap.toFixed(1)}`);
         }
       }
     }
