@@ -29,8 +29,7 @@
   /* Outcome measures: key, label, unit, true if a lower number is better, and the hover text. */
   const MEASURES = [
     ['util', 'Bedroom utilization', 'spaces', false, 'Share of bedroom sleeping spaces in use. A queen counts as 2 spaces, so one person alone in a queen uses half of it.'],
-    ['singleQueen', 'Single in queen', 'queen-nights', true, 'Nights where one person sleeps alone in a queen.'],
-    ['wastedQueen', 'Wasted queen', 'queen-nights', true, 'One person alone in a queen while a couple uses two beds and someone sleeps on the floor that night. The queen cost the house a bed.'],
+    ['wastedQueen', 'Wasted queen', 'queen-nights', true, 'One person alone in a queen or king on a night when a couple, or a host with a partner guest, did not get one (twin pair, full, air mattress, or apart).'],
     ['heldEmptyQueen', 'Held-empty queen', 'queen-nights', true, 'A queen kept empty for a partner who arrives on a later night.'],
     ['floorNights', 'Floor nights', 'person-nights', true, 'Nights on a couch, an air mattress, or no bed.'],
     ['dominatedFloor', 'Avoidable floor', 'person-nights', true, 'Someone on the floor while a better bed was free for all of their nights, without a mixed-gender room.'],
@@ -42,8 +41,9 @@
     ['partnerShared', 'Partner guest with host', 'hosts', false, 'Hosts whose partner guest shared their bed or a twin pair in their room.'],
     ['guestDisplace', 'Member on floor, guest in bed', 'person-nights', true, 'A member slept on the floor while a guest had a real bed that night. The optimizer never allows this.'],
   ];
-  /* Preferences are goals in the objective, not issues. The page shows them without a better or worse mark. */
+  /* Context rows are not issues. The page shows them without a better or worse mark. */
   const PREFERENCES = [
+    ['singleQueen', 'Single in queen', 'queen-nights', null, 'Nights where one person sleeps alone in a queen or king. Not an issue by itself: it is fine when no couple needs the queen. See Wasted queen for the bad case.'],
     ['mixedRoom', 'Mixed-gender room-nights', 'room-nights', null, 'Shared bedrooms with singles of different genders. The optimizer aims for same-gender rooms (Setup: Same-gender rooms) but trades it off against priority and floor nights. With few singles of one gender, some mixing is expected. Not counted as an issue.'],
   ];
   const GUEST_CHOICES = [
@@ -67,6 +67,7 @@
     maxFloor: 'Most floor nights for any one person in the season.',
   };
   const INCIDENT_LABELS = {
+    singleQueen: 'Single in queen',
     wastedQueen: 'Wasted queen',
     heldEmptyQueen: 'Held-empty queen',
     dominatedFloor: 'Avoidable floor',
@@ -534,7 +535,7 @@
     const nightButtons = M.NIGHTS.map((x, i) => [i, `${x} <span class="free-n">${free[i]} free</span>`]);
 
     let html = `<div class="card"><div class="row"><h2>Optimizer vs first come</h2><span class="status mono">${attending.length} people · ${Object.keys(last.guests).length} guests · solved in ${Math.round(last.ms)} ms${o.result.stages && o.result.stages.some((x) => x.startsWith('S2')) ? ' · planned ahead' : ''}</span><div class="spacer"></div><button class="btn small" id="btn-reassign" data-tip="Solve again with a new random draw. Ties can come out differently.">Re-run</button></div>
-      <div class="cols wk-cols"><div>${compareTable([['Outcomes'], ...measureRows(o.outcomes.counts, f.outcomes.counts), ['Preferences'], ...measureRows(o.outcomes.counts, f.outcomes.counts, PREFERENCES), ['Rotation'], ...fairRows], true)}</div>
+      <div class="cols wk-cols"><div>${compareTable([['Outcomes'], ...measureRows(o.outcomes.counts, f.outcomes.counts), ['Context'], ...measureRows(o.outcomes.counts, f.outcomes.counts, PREFERENCES), ['Rotation'], ...fairRows], true)}</div>
       <div><div class="row">${seg('plan-method', METHODS, weekend.view)}${seg('plan-night', nightButtons, weekend.night)}</div>
       ${roomsHtml(view.result, view.outcomes, weekend.night)}
       <div class="legend small"><span class="chip couple">AB</span>couple<span class="chip single">CD</span>single<span class="chip guest">GH+</span>guest<span class="chip couple held">EF</span>held for partner<span class="bed-key"></span>free bed</div>
@@ -649,7 +650,7 @@
       ['Outcomes'],
       ...measureRows(o.outcomes, f.outcomes),
       ['Max floor nights, 1 person', maxFloor(o), maxFloor(f), cap === null ? 'nights' : `nights, cap ${cap}`, true, 0, false, TIPS.maxFloor],
-      ['Preferences'],
+      ['Context'],
       ...measureRows(o.outcomes, f.outcomes, PREFERENCES),
     ];
 
@@ -738,7 +739,7 @@
 
     let html = `<div class="row"><h2>Weekend detail</h2><select id="wd-week">${weekOptions}</select>${seg('wd-night', nightButtons, detail.night)}
       <span class="mono muted small">${Object.keys(wa.registrations).length} members · ${Object.values(wa.guests || {}).reduce((s, g) => s + (g.count || 1), 0)} guests · click a date in the bed grid to jump</span></div>`;
-    html += `<div class="cols wk-cols"><div>${compareTable([['This weekend'], ...measureRows(wa.outcomes.counts, wb.outcomes.counts), ['Preferences'], ...measureRows(wa.outcomes.counts, wb.outcomes.counts, PREFERENCES)], true, SM())}</div>
+    html += `<div class="cols wk-cols"><div>${compareTable([['This weekend'], ...measureRows(wa.outcomes.counts, wb.outcomes.counts), ['Context'], ...measureRows(wa.outcomes.counts, wb.outcomes.counts, PREFERENCES)], true, SM())}</div>
       <div class="two"><div><h3><span class="key opt"></span>${esc(labelA)}</h3>${roomsHtml(wa.result, wa.outcomes, detail.night, rooms)}</div>
       <div><h3><span class="key fc"></span>${esc(labelB)}</h3>${roomsHtml(wb.result, wb.outcomes, detail.night, rooms)}</div></div></div>`;
 
@@ -1191,7 +1192,8 @@ floor = couch, air twin, air queen, no bed</pre>
 gM, gF, z[r,n] ∈ {0,1}   room r, night n: male / female single / both</pre>
 <h3>Objective</h3>
 <pre class="model mono">max Σ y[p,o]·( Σ_m n_m·[ w_m·(v_m + ε_o) + 0.1·v_m − 4·floor_m ]
-             + 5000·[couple in real queen]
+             + 5000·[couple or booked-ahead pair in queen/king]
+             + 2500·[late partner-guest pair in queen/king]
              − 300·capExcess − 10000·nobed )
     − G·Σ z[r,n]
 
@@ -1210,8 +1212,8 @@ priority_m += mean_pool,n(v) − v_m,n    ∀ nights of m
 high priority = due a better room</pre>
 <h3>Measures</h3>
 <pre class="model mono">Utilization      sleepers / spaces (queen = 2), bedrooms
-Single in queen  queen-night, 1 sleeper
-Wasted queen     single in Q ∧ couple in 2 beds ∧ someone on floor
+Single in queen  context, not an issue: queen-night, 1 sleeper
+Wasted queen     single in Q/K ∧ a pair that night without Q/K (twin pair, full, air, apart)
 Held-empty queen queen held for an absent partner
 Avoidable floor  floor while a better option was free (gender-safe)
 Priority inv.    same gender + nights, Δpriority > 1, lower priority has better bed

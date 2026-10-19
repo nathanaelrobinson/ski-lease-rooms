@@ -117,3 +117,10 @@ History replay:
 - Real people sometimes changed beds between nights, so each stay in one bed is its own party in the actual result. The measures read beds per party.
 - Bed types king and full were added. A couple can share both. A king counts as a queen for the couple-first rule.
 - A host can bring more than one guest (guests[host].count).
+
+## Queens, pairs, and the weekend detail (added 2026-10-19)
+
+- A single in a queen is not an issue by itself. It shows as context, without a better or worse mark.
+- Wasted queen: a single in a queen or king on a night when a pair did not get one (a couple, or a host with a partner guest, in a twin pair, a full, an air mattress, or apart).
+- Queen order: member couples and booked-ahead partner pairs (bonus 5000), then late partner pairs (bonus 2500), then singles by priority.
+- The Season tab has a weekend detail: the measures of one weekend, the room drawing of both methods side by side for each night, and who slept where.

@@ -102,13 +102,35 @@
     );
 
     /*
-     * Queen measures. A wasted queen is a single in a queen on a night when a couple uses two beds
-     * and a person is on the floor. On that night, the queen cost a bed.
+     * Queen measures. A single in a queen is not an issue by itself.
+     * A wasted queen is a single in a queen or king on a night when a pair did not get one:
+     * a couple, or a host with a partner guest, in a twin pair, a full, an air mattress, or apart.
+     * The count on a night is the smaller of the two numbers.
      */
+    const queenOf = (pi, m) => {
+      const b = bedOf(pi, m);
+      return b !== Model.OVERFLOW && Model.QUEEN_TYPES.has(bedById.get(b).type);
+    };
     for (let n = 0; n < Model.NIGHTS.length; n++) {
-      const couplesInTwoBeds = result.parties.filter(
-        (p, pi) => p.members.length === 2 && p.nights.includes(n) && result.choices[pi].beds.length === 2,
-      );
+      const pairsWithout = [];
+      result.parties.forEach((p, pi) => {
+        if (!p.nights.includes(n)) return;
+        if ((p.kind === 'couple' || p.kind === 'hostPartner') && p.members.every((m) => p.memberNights[m].includes(n))) {
+          const [a, b] = p.members;
+          if (!(queenOf(pi, a) && bedOf(pi, a) === bedOf(pi, b))) pairsWithout.push(p.members);
+        } else if (p.kind === 'single' && p.hadPartnerGuest) {
+          pairsWithout.push([p.members[0], Model.guestId(p.members[0])]);
+        } else if (p.kind === 'single') {
+          /* Actual data: a host whose partner guest sleeps in another bed on the same night. */
+          const m = p.members[0];
+          const g = Model.guestId(m);
+          const gp = personById.get(g);
+          if (gp && gp.guestType === 'partner') {
+            const gi = result.parties.findIndex((q) => q.members.includes(g) && q.nights.includes(n));
+            if (gi >= 0 && bedOf(gi, g) !== bedOf(pi, m)) pairsWithout.push([m, g]);
+          }
+        }
+      });
       /* Guest displacement: a member on the floor while a guest has a real bed on the same night. */
       const guestsInRealBeds = result.parties.filter(
         (p, pi) => p.kind === 'guest' && p.nights.includes(n) && !Model.isFloor(bedOf(pi, p.members[0]), bedById),
@@ -118,6 +140,7 @@
         counts.guestDisplace += displaced;
         add('guestDisplace', n, floorOnNight[n].slice(0, displaced), '');
       }
+      const singlesInQueens = [];
       for (const bed of beds) {
         if (!Model.QUEEN_TYPES.has(bed.type)) continue;
         const cell = result.plan[n][bed.id];
@@ -129,12 +152,14 @@
           const party = result.parties.find((p) => p.id === cell.partyId);
           if (party.members.length === 1) {
             counts.singleQueen++;
-            if (couplesInTwoBeds.length > 0 && floorOnNight[n].length > 0) {
-              counts.wastedQueen++;
-              add('wastedQueen', n, [...cell.sleepers, ...couplesInTwoBeds[0].members], bed.id);
-            }
+            singlesInQueens.push({ bed, who: cell.sleepers[0] });
           }
         }
+      }
+      const wasted = Math.min(singlesInQueens.length, pairsWithout.length);
+      for (let k = 0; k < wasted; k++) {
+        counts.wastedQueen++;
+        add('wastedQueen', n, [singlesInQueens[k].who, ...pairsWithout[k]], singlesInQueens[k].bed.id);
       }
     }
 

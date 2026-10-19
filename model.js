@@ -27,6 +27,11 @@
    * A host with a partner guest gets the same bonus only if the request was booked ADVANCE_WEEKS ahead.
    */
   const COUPLE_QUEEN_BONUS = 5000;
+  /*
+   * A host with a partner guest who did not book ahead gets PAIR_QUEEN_BONUS. It is smaller than the couple bonus
+   * and larger than any weighted bed value. Queens go to member couples first, then to pairs, then to singles.
+   */
+  const PAIR_QUEEN_BONUS = 2500;
   const ADVANCE_WEEKS = 3;
   /* Each floor night costs FLOOR_PENALTY points, independent of the weight. */
   const FLOOR_PENALTY = 4;
@@ -304,6 +309,7 @@
           }
           const meas = optionMeasures(party, option, bedById);
           if (meas.bonus) score += COUPLE_QUEEN_BONUS;
+          else if (option.queen && party.kind === 'hostPartner') score += PAIR_QUEEN_BONUS;
           if (option.alone) score -= ALONE_PENALTY * party.nights.length;
           score -= CAP_PENALTY * capExcess(party, option, floorNights || {}, settings.couchCap, bedById);
           score -= OVERFLOW_PENALTY * meas.nobed;
