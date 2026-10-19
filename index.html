@@ -23,6 +23,7 @@
   --fc: #bdbcb5;
   --couple: #6250d6;
   --single: #0f8a5f;
+  --guest: #b56d00;
   --grid: #e7e6e1;
   --warn-bg: #fff4dc;
   --warn-ink: #6b4a00;
@@ -46,6 +47,8 @@
     --fc: #4a4945;
     --couple: #9085e9;
     --single: #199e70;
+  --guest: #c98500;
+    --guest: #c98500;
     --grid: #2c2c29;
     --warn-bg: #3a2e12;
     --warn-ink: #f3d79a;
@@ -99,7 +102,9 @@ section.panel.active { display: block; }
 .spacer { flex: 1; }
 .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 14px; }
 .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
-.wk { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 10px; align-items: start; }
+.setup-grid { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: 10px; align-items: start; }
+@media (max-width: 1250px) { .setup-grid { grid-template-columns: minmax(0, 1fr); } }
+.wk { display: grid; grid-template-columns: 430px minmax(0, 1fr); gap: 10px; align-items: start; }
 @media (max-width: 980px) { .cols, .two, .wk { grid-template-columns: minmax(0, 1fr); } }
 button.btn { appearance: none; font: inherit; font-weight: 500; padding: 4px 10px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
 button.btn:hover { background: var(--surface-2); }
@@ -122,6 +127,8 @@ table.tight td, table.tight th { padding: 2px 5px; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.c, th.c { text-align: center; }
 .muted { color: var(--text-3); }
+.nw { white-space: nowrap; }
+#reg-table td:first-child { white-space: nowrap; }
 .status { color: var(--text-3); }
 .note { background: var(--warn-bg); color: var(--warn-ink); border-radius: 6px; padding: 6px 10px; margin: 0; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
@@ -160,6 +167,10 @@ td.pct { text-align: center; font-variant-numeric: tabular-nums; border: 2px sol
 .chip { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 9px; font: 600 9.5px/1 Inter, sans-serif; color: #fff; }
 .chip.couple { background: var(--couple); }
 .chip.single { background: var(--single); }
+.chip.guest { background: var(--guest); width: auto; padding: 0 4px; min-width: 22px; }
+.chip.sm { width: 14px; height: 14px; min-width: 0; padding: 0; margin-right: 4px; font-size: 9px; }
+select.g-sel { font-size: 11.5px; padding: 1px 2px; max-width: 120px; }
+table.heat sup { font-size: 8px; margin-left: 1px; }
 .chip.held { background: none; border: 1.5px dashed var(--couple); color: var(--couple); }
 .legend .chip { margin-right: -6px; }
 .bed-key { display: inline-block; width: 16px; height: 12px; background: var(--bed-free); border: 1px solid var(--border); border-radius: 2px; margin-right: -6px; }
@@ -182,7 +193,7 @@ table.heat td.name { white-space: nowrap; }
 .bed-chip select, .bed-chip input { border: 0; background: none; padding: 1px 2px; }
 .bed-chip input { width: 34px; }
 .bed-chip button { border: 0; background: none; color: var(--text-3); cursor: pointer; font-size: 13px; padding: 0 3px; }
-input.w-name { width: 150px; }
+input.w-name { width: 120px; }
 /* Hover help */
 .tipbox { position: fixed; z-index: 50; display: none; max-width: 280px; padding: 6px 9px; border-radius: 6px; background: var(--text); color: var(--surface); font-size: 12px; line-height: 1.4; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
 [data-tip] { cursor: help; }
@@ -249,7 +260,7 @@ pre.model { background: var(--surface-2); border-radius: 6px; padding: 8px 10px;
       </div>
       <div id="settings"></div>
     </div>
-    <div class="two">
+    <div class="setup-grid">
       <div class="card">
         <div class="row"><h2>Rooms</h2><span class="mono muted">couples: queen, air queen, twin pair</span><div class="spacer"></div><button class="btn small" id="btn-add-room">+ room</button></div>
         <div class="scroll"><table id="rooms-editor" class="tight"></table></div>

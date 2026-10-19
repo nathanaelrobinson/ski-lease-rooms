@@ -134,7 +134,7 @@ test('the couch cap moves a person off the couch', () => {
 test('the outcomes count a wasted queen and a priority inversion', () => {
   const rooms = Defaults.rooms;
   const beds = Model.flattenBeds(rooms);
-  const parties = Model.buildParties(config.people, { ivan: [2], kai: [2], alex: [2], blair: [2], pia: [2] });
+  const parties = Model.buildParties(config.people, { ivan: [2], kai: [2], alex: [2], blair: [2], pia: [2] }).members;
   const pick = (party) => {
     if (party.members.includes('ivan')) return { beds: ['primary-q'], assign: { ivan: 'primary-q' } };
     if (party.members.includes('pia')) return { beds: ['couch-1'], assign: { pia: 'couch-1' } };
@@ -151,7 +151,7 @@ test('the outcomes count a wasted queen and a priority inversion', () => {
 });
 
 test('the outcomes count a dominated floor night', () => {
-  const parties = Model.buildParties(config.people, { kai: [1, 2] });
+  const parties = Model.buildParties(config.people, { kai: [1, 2] }).members;
   const result = Model.finishResult(parties, [{ beds: ['couch-1'], assign: { kai: 'couch-1' } }], beds);
   const o = Outcomes.assessWeekend({ result, rooms: config.rooms, people: config.people, couchCap: 1 });
   assert.strictEqual(o.counts.floorNights, 2);
@@ -167,4 +167,37 @@ test('couples get the queens first, and the lower balance gets the better queen'
   assert.strictEqual(result.assignment.gabe, 'primary-q');
   assert.strictEqual(result.assignment.alex, 'lake-q');
   assert.notStrictEqual(bedById.get(result.assignment.kai).type, 'queen');
+});
+
+const twoBedRooms = [
+  { id: 'a', name: 'A', beds: [{ id: 'a-q', type: 'queen', value: 10 }] },
+  { id: 'b', name: 'B', beds: [{ id: 'b-t', type: 'bunk_top', value: 3 }, { id: 'b-b', type: 'bunk_bottom', value: 4 }] },
+];
+
+test('guests never push a member to the floor', () => {
+  /* Three members and three any-bed guests in a house with three beds. */
+  const reg = { ivan: [2], kai: [2], max: [2] };
+  const guests = { ivan: { type: 'any' }, kai: { type: 'any' }, max: { type: 'roommate' } };
+  const result = Model.solveWeekend(highs, { rooms: twoBedRooms, people: config.people, registrations: reg, guests, rng: Sim.rngFromSeed(13) });
+  for (const m of ['ivan', 'kai', 'max']) assert.notStrictEqual(result.assignment[m], null, `${m} has no bed`);
+  for (const g of ['g:ivan', 'g:kai', 'g:max']) assert.strictEqual(result.assignment[g], null);
+});
+
+test('a partner guest shares the host bed when no member needs it', () => {
+  const reg = { ivan: [2], kai: [2] };
+  const guests = { ivan: { type: 'partner' } };
+  const result = Model.solveWeekend(highs, { rooms: twoBedRooms, people: config.people, registrations: reg, guests, rng: Sim.rngFromSeed(14) });
+  assert.strictEqual(result.assignment.ivan, 'a-q');
+  assert.strictEqual(result.assignment['g:ivan'], 'a-q');
+});
+
+test('planning ahead gives this weekend to the person without a known queen later', () => {
+  const reg = { ivan: [2], kai: [2] };
+  const balances = { ivan: -0.5, kai: 0 };
+  const future = [{ registrations: { ivan: [2], kai: [2] }, guests: { ivan: { type: 'partner', advance: true } } }];
+  const base = { rooms: twoBedRooms, people: config.people, registrations: reg, balances, future };
+  const off = Model.solveWeekend(highs, { ...base, settings: { noise: 0, planning: false }, rng: Sim.rngFromSeed(15) });
+  const on = Model.solveWeekend(highs, { ...base, settings: { noise: 0, planning: true }, rng: Sim.rngFromSeed(15) });
+  assert.strictEqual(off.assignment.ivan, 'a-q');
+  assert.strictEqual(on.assignment.kai, 'a-q');
 });

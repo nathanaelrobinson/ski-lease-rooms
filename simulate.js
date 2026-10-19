@@ -89,6 +89,50 @@
     return reg;
   }
 
+  /* Defaults for profiles that do not set the guest and calendar fields. */
+  function guestRate(p) {
+    return p.guestRate === undefined || p.guestRate === null ? 0.1 : Number(p.guestRate);
+  }
+  function guestType(p) {
+    return p.guestType || (p.partnerId ? 'roommate' : 'partner');
+  }
+  function planAhead(p) {
+    return p.planAhead === undefined || p.planAhead === null ? 0.5 : Number(p.planAhead);
+  }
+
+  /*
+   * Draw one weekend: registrations, guests, and how many weeks ahead each entry is on the calendar.
+   * A partner guest needs a host without a partner on that weekend. Else it becomes an any-bed guest.
+   * guests[host].advance is true if the entry was on the calendar ADVANCE_WEEKS or more ahead.
+   */
+  function drawWeekend(people, rng, leadWeeks) {
+    const registrations = drawAttendance(people, rng);
+    const guests = {};
+    const leads = {};
+    for (const p of people) {
+      if (!registrations[p.id]) continue;
+      leads[p.id] = rng() < planAhead(p) ? leadWeeks : 0;
+      if (rng() < guestRate(p)) {
+        let type = guestType(p);
+        if (type === 'partner' && p.partnerId && registrations[p.partnerId]) type = 'any';
+        guests[p.id] = { type, advance: leads[p.id] >= Model.ADVANCE_WEEKS };
+      }
+    }
+    return { registrations, guests, leads };
+  }
+
+  /* Keep only the calendar entries of a future weekend that are known `ahead` weeks before it. */
+  function visibleWeek(week, ahead) {
+    const registrations = {};
+    const guests = {};
+    for (const [id, nights] of Object.entries(week.registrations)) {
+      if ((week.leads[id] || 0) < ahead) continue;
+      registrations[id] = nights;
+      if (week.guests[id]) guests[id] = week.guests[id];
+    }
+    return { registrations, guests };
+  }
+
   /*
    * Assign the beds first come, first served.
    * Each party gets a random sign-up time. A party with a flexible person signs up earlier on average.
@@ -99,38 +143,47 @@
     const beds = Model.flattenBeds(input.rooms);
     const bedById = new Map(beds.map((b) => [b.id, b]));
     const personById = new Map(input.people.map((p) => [p.id, p]));
-    const parties = Model.buildParties(input.people, input.registrations);
-    const order = parties.map((party, pi) => {
-      const flexible = party.members.some((m) => personById.get(m).flexible);
+    const built = Model.buildParties(input.people, input.registrations, input.guests || {});
+    const order = built.members.map((party, pi) => {
+      const flexible = party.members.some((m) => !Model.isGuest(m) && personById.get(m).flexible);
       const time = -Math.log(1 - rng()) * (flexible ? FLEXIBLE_HEAD_START : 1);
-      return { pi, time };
+      return { party, time };
     });
     order.sort((a, b) => a.time - b.time);
 
+    /* Guests sign up together with their host, so a guest can take a bed before a late member. */
+    const sequence = [];
+    for (const { party } of order) {
+      sequence.push(party);
+      const host = party.kind === 'hostPartner' ? party.host : party.members.find((m) => !Model.isGuest(m));
+      for (const g of built.guests) if (party.members.includes(g.host) || g.host === host) sequence.push(g);
+    }
+
     const taken = Model.NIGHTS.map(() => new Set());
-    const choices = new Array(parties.length);
-    for (const { pi } of order) {
-      const party = parties[pi];
-      const options = Model.buildOptions(party, beds);
+    const isFree = (party, option) => party.nights.every((n) => option.beds.every((b) => !taken[n].has(b)));
+    const parties = [];
+    const choices = [];
+    const hostRoom = {};
+    for (const party of sequence) {
+      const options = Model.buildOptions(party, beds).filter((o) => !o.alone);
       let best = options.find((o) => o.overflow);
       let bestScore = -Infinity;
       for (const option of options) {
-        if (option.overflow) continue;
-        const free = party.nights.every((n) => option.beds.every((b) => !taken[n].has(b)));
-        if (!free) continue;
-        const score =
-          party.members.reduce((s, m) => s + bedById.get(option.assign[m]).value, 0) / party.members.length +
-          rng() * 0.01;
+        if (option.overflow || !isFree(party, option)) continue;
+        let score = party.members.reduce((s, m) => s + bedById.get(option.assign[m]).value, 0) / party.members.length + rng() * 0.01;
+        if (party.kind === 'guest' && party.guestType === 'roommate' && hostRoom[party.host] === bedById.get(option.beds[0]).roomId) score += 100;
         if (score > bestScore) {
           best = option;
           bestScore = score;
         }
       }
       if (best.overflow && party.members.length === 2) best = splitCouple(party, beds, taken, rng) || best;
-      choices[pi] = best;
+      parties.push(party);
+      choices.push(best);
       for (const n of party.nights) for (const b of best.beds) taken[n].add(b);
+      for (const m of party.members) if (!Model.isGuest(m) && best.assign[m]) hostRoom[m] = bedById.get(best.assign[m]).roomId;
     }
-    return { status: 'Optimal', order: order.map((o) => o.pi), ...Model.finishResult(parties, choices, beds) };
+    return { status: 'Optimal', ...Model.finishResult(parties, choices, beds) };
   }
 
   /*
@@ -151,27 +204,37 @@
    * Run a number of weekends with one method.
    * attendance is a list of registrations, one for each weekend.
    */
-  function runMethod(highs, config, attendance, method, seed) {
+  function runMethod(highs, config, attendance, method, seed, limit) {
     const rng = rngFromSeed(seed);
     const bedById = new Map(Model.flattenBeds(config.rooms).map((b) => [b.id, b]));
     const couchCap = capSetting(config.settings);
+    const lead = Number(config.settings.leadWeeks) || 0;
     let balances = {};
     let floorNights = {};
     const weeks = [];
-    for (const registrations of attendance) {
+    const count = limit === undefined ? attendance.length : limit;
+    for (let t = 0; t < count; t++) {
+      const { registrations, guests } = attendance[t];
+      const future = [];
+      if (method === 'optimizer' && config.settings.planning) {
+        for (let k = 1; k <= lead && t + k < attendance.length; k++) future.push(visibleWeek(attendance[t + k], k));
+      }
       const input = {
         rooms: config.rooms,
         people: config.people,
         registrations,
+        guests,
+        future,
         balances,
         floorNights,
         settings: { ...config.settings, couchCap: method === 'optimizer' ? couchCap : null },
         rng,
       };
       const result = method === 'optimizer' ? Model.solveWeekend(highs, input) : firstComeWeekend(input);
-      const outcomes = Outcomes.assessWeekend({ result, rooms: config.rooms, people: config.people, balances, floorNights, couchCap });
+      const people = Model.withGuests(config.people, guests);
+      const outcomes = Outcomes.assessWeekend({ result, rooms: config.rooms, people, balances, floorNights, couchCap });
       const update = Model.updateBalances(balances, result, config.rooms);
-      weeks.push({ registrations, result, outcomes, nightly: update.nightly, balancesBefore: balances, balancesAfter: update.balances });
+      weeks.push({ registrations, guests, leads: attendance[t].leads, result, outcomes, nightly: update.nightly, balancesBefore: balances, balancesAfter: update.balances });
       balances = update.balances;
       floorNights = addFloorNights(floorNights, result, bedById);
     }
@@ -188,23 +251,24 @@
     const next = { ...floorNights };
     for (const party of result.parties) {
       for (const m of party.members) {
+        if (Model.isGuest(m)) continue;
         if (Model.isFloor(result.assignment[m], bedById)) next[m] = (next[m] || 0) + party.memberNights[m].length;
       }
     }
     return next;
   }
 
-  function drawSeasonAttendance(people, seed, count) {
+  function drawSeasonAttendance(people, seed, count, leadWeeks) {
     const rng = rngFromSeed(seed);
     const out = [];
-    for (let i = 0; i < count; i++) out.push(drawAttendance(people, rng));
+    for (let i = 0; i < count; i++) out.push(drawWeekend(people, rng, Number(leadWeeks) || 0));
     return out;
   }
 
   /* Run the full season with both methods on the same attendance. */
   function runSeason(highs, config) {
     const seed = Number(config.settings.seed) || 1;
-    const attendance = drawSeasonAttendance(config.people, seed, SEASON_WEEKENDS);
+    const attendance = drawSeasonAttendance(config.people, seed, SEASON_WEEKENDS, config.settings.leadWeeks);
     const optimizer = runMethod(highs, config, attendance, 'optimizer', seed + 1);
     const firstCome = runMethod(highs, config, attendance, 'firstCome', seed + 2);
     return {
@@ -218,9 +282,9 @@
   /* Run the optimizer on the first MID_SEASON_WEEKENDS weekends. Return the balances and the floor nights. */
   function midSeasonState(highs, config) {
     const seed = Number(config.settings.seed) || 1;
-    const attendance = drawSeasonAttendance(config.people, seed, MID_SEASON_WEEKENDS);
-    const run = runMethod(highs, config, attendance, 'optimizer', seed + 1);
-    return { balances: run.balances, floorNights: run.floorNights };
+    const attendance = drawSeasonAttendance(config.people, seed, SEASON_WEEKENDS, config.settings.leadWeeks);
+    const run = runMethod(highs, config, attendance, 'optimizer', seed + 1, MID_SEASON_WEEKENDS);
+    return { balances: run.balances, floorNights: run.floorNights, attendance };
   }
 
   /*
@@ -240,6 +304,7 @@
       for (const night of week.nightly) {
         for (const row of night.rows) {
           const m = perPerson[row.personId];
+          if (!m) continue;
           m.nights++;
           m.valueSum += row.value;
           const bedId = week.result.assignment[row.personId];
@@ -300,10 +365,16 @@
     rngFromSeed,
     seasonWeekends,
     drawAttendance,
+    drawWeekend,
+    visibleWeek,
+    guestRate,
+    guestType,
+    planAhead,
     firstComeWeekend,
     runMethod,
     runSeason,
     midSeasonState,
+    drawSeasonAttendance,
     capSetting,
     metrics,
   };

@@ -23,6 +23,10 @@
     'mixedRoom',
     'coupleSplit',
     'capExcess',
+    'guestNights',
+    'guestNoBed',
+    'partnerShared',
+    'guestDisplace',
   ];
 
   function zeroCounts() {
@@ -87,9 +91,9 @@
       }
     }
 
-    /* People on a floor bed or no bed, for each night. */
+    /* Members on a floor bed or no bed, for each night. Guests do not count. */
     const floorOnNight = Model.NIGHTS.map((_, n) =>
-      result.parties.flatMap((p) => p.members.filter((m) => p.memberNights[m].includes(n) && Model.isFloor(result.assignment[m], bedById))),
+      result.parties.flatMap((p) => p.members.filter((m) => !Model.isGuest(m) && p.memberNights[m].includes(n) && Model.isFloor(result.assignment[m], bedById))),
     );
 
     /*
@@ -100,6 +104,15 @@
       const couplesInTwoBeds = result.parties.filter(
         (p, pi) => p.members.length === 2 && p.nights.includes(n) && result.choices[pi].beds.length === 2,
       );
+      /* Guest displacement: a member on the floor while a guest has a real bed on the same night. */
+      const guestsInRealBeds = result.parties.filter(
+        (p) => p.kind === 'guest' && p.nights.includes(n) && !Model.isFloor(result.assignment[p.members[0]], bedById),
+      ).length;
+      const displaced = Math.min(floorOnNight[n].length, guestsInRealBeds);
+      if (displaced > 0) {
+        counts.guestDisplace += displaced;
+        add('guestDisplace', n, floorOnNight[n].slice(0, displaced), '');
+      }
       for (const bed of beds) {
         if (bed.type !== 'queen') continue;
         const cell = result.plan[n][bed.id];
@@ -123,7 +136,21 @@
     /* Floor nights, dominated floor nights, and nights above the couch cap. */
     result.parties.forEach((party, pi) => {
       const option = result.choices[pi];
-      const onFloor = party.members.filter((m) => Model.isFloor(option.assign[m], bedById));
+      if (party.kind === 'guest') {
+        const g = party.members[0];
+        if (option.assign[g] === Model.OVERFLOW) {
+          counts.guestNoBed += party.nights.length;
+          add('guestNoBed', null, [g], '');
+        } else counts.guestNights += party.nights.length;
+        return;
+      }
+      if (party.kind === 'hostPartner') {
+        const g = party.members.find((m) => Model.isGuest(m));
+        if (!option.overflow) counts.guestNights += party.memberNights[g].length;
+        /* Shared means one shared bed, or a twin pair in one room. A split couple does not count. */
+        if (option.shared || (option.beds.length === 2 && !option.split)) counts.partnerShared++;
+      }
+      const onFloor = party.members.filter((m) => !Model.isGuest(m) && Model.isFloor(option.assign[m], bedById));
       if (onFloor.length === 0) return;
       for (const m of onFloor) {
         const nights = party.memberNights[m].length;
@@ -142,7 +169,7 @@
        * For a single, the free bed must not make a room with two genders.
        */
       const better = Model.buildOptions(party, beds).filter(
-        (o) => !o.overflow && o.beds.every((b) => !Model.FLOOR_TYPES.has(bedById.get(b).type)),
+        (o) => !o.overflow && !o.alone && o.beds.every((b) => !Model.FLOOR_TYPES.has(bedById.get(b).type)),
       );
       const gender = party.members.length === 1 ? personById.get(party.members[0]).gender : null;
       const free = better.find((o) =>
@@ -159,7 +186,7 @@
      * Priority inversion: two singles of the same gender with the same nights.
      * The person with the higher balance has the better bed, so a swap was possible and fairer.
      */
-    const singles = result.parties.filter((p) => p.members.length === 1);
+    const singles = result.parties.filter((p) => p.kind === 'single');
     for (let i = 0; i < singles.length; i++) {
       for (let j = 0; j < singles.length; j++) {
         if (i === j) continue;
@@ -185,7 +212,7 @@
           const cell = result.plan[n][bed.id];
           if (!cell) continue;
           const party = result.parties.find((p) => p.id === cell.partyId);
-          if (party.members.length !== 1) continue;
+          if (party.kind !== 'single') continue;
           for (const m of cell.sleepers) {
             genders.add(personById.get(m).gender);
             ids.push(m);

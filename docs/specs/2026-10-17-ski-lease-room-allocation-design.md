@@ -83,3 +83,20 @@ The Weekend tab runs both methods on the same registrations. It shows a table of
 - Overflow only occurs if the beds run out.
 - The balances on each night add up to zero.
 - Over a season, the optimizer gives a smaller standard deviation of advantage than the baseline.
+
+## Guests and planning ahead (added 2026-10-19)
+
+Guests:
+
+- A member can bring one guest for the member's nights. Types: partner (shares the host bed), roommate (in the host room), and any bed.
+- Guests never displace members. Stage S0 places members with each host alone and records the member floor and no-bed nights. Stage S1 adds partner guests under the limit that member floor and no-bed nights do not go up. Stage S3 places roommate and any-bed guests in the beds that are left, and members do not move.
+- A partner guest booked 3 or more weeks ahead gets the same queen bonus as a member couple. Priority then decides. A later request only gets the queens that member couples do not need.
+- A host with a partner guest stays in the single pool, so a queen costs the host priority. A guest in their own bed costs the host the amount by which the guest bed beats the single average of that night (minimum 0).
+
+Calendar and planning ahead:
+
+- Each person can put weekends on the calendar ahead of time (people table: Plan %, settings: calendar lead).
+- Stage S2 (rollout): before it decides this weekend, the solver plays the known future weekends forward with the one-weekend model. The result is a projected priority for each member. This weekend is solved again with the projected priority. It must keep the S1 hard measures: member floor, no-bed nights, and mixed rooms do not go up, and couples in queens and partner guests with hosts do not go down.
+- A first version solved the window as one multi-week MIP. It took 10 to 60 seconds for a season and did not improve fairness, so the rollout replaced it.
+
+New measures: guest nights placed, guest nights with no bed, partner guests with host, and member on the floor while a guest has a bed.

@@ -36,10 +36,23 @@
     ['mixedRoom', 'Mixed-gender room', 'room-nights', true, 'A bedroom on a night shared by singles of different genders.'],
     ['coupleSplit', 'Couple split', 'couples', true, 'A couple that sleeps in two separate beds that are not a twin pair in one room.'],
     ['capExcess', 'Over couch cap', 'person-nights', true, 'Floor nights above the season couch cap.'],
+    ['guestNights', 'Guest nights placed', 'guest-nights', false, 'Guest nights with a bed (shared with the host, or their own).'],
+    ['guestNoBed', 'Guest nights, no bed', 'guest-nights', true, 'Guest nights with no bed left after all members were placed.'],
+    ['partnerShared', 'Partner guest with host', 'hosts', false, 'Hosts whose partner guest shared their bed or a twin pair in their room.'],
+    ['guestDisplace', 'Member on floor, guest in bed', 'person-nights', true, 'A member slept on the floor while a guest had a real bed that night. The optimizer never allows this.'],
   ];
+  const GUEST_CHOICES = [
+    ['', '–'],
+    ['partner', 'Partner'],
+    ['partner+', 'Partner, booked ahead'],
+    ['roommate', 'Roommate'],
+    ['any', 'Any bed'],
+  ];
+  const GUEST_LABELS = { partner: 'partner', roommate: 'roommate', any: 'any bed' };
   const TIPS = {
     priority: 'High priority = due a better room. It goes up when a person gets a worse bed than the average of their group (couples or singles), and down when they get a better one. 0 = fair share so far.',
     floor: 'Floor nights so far this season: couch, air mattress, or no bed.',
+    guest: 'Partner: shares your bed (needs a queen or twin pair). Booked ahead: on the calendar 3+ weeks before, so it competes equally with member couples for a queen. Roommate: in your room. Any bed: anywhere left. Guests never take a bed a member needs, and you pay for their bed in priority.',
     rotation: 'Correlation between priority before the weekend and bed quality, singles only. Positive = the people who were due got the better beds.',
     stdev: 'How far priority per night spreads around 0 across people. Lower = more even.',
     range: 'Highest minus lowest priority per night (people with 4 or more nights).',
@@ -56,13 +69,15 @@
     mixedRoom: 'Mixed-gender room',
     coupleSplit: 'Couple split',
     capExcess: 'Over couch cap',
+    guestNoBed: 'Guest without bed',
+    guestDisplace: 'Member on floor, guest in bed',
   };
   /* Sequential blue ramp from the chart palette. Index 0 is the lowest value. */
   const RAMP = ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281', '#0d366b'];
 
   let highs = null;
   let config = loadConfig();
-  const weekend = { mode: 'fresh', registrations: {}, runs: 0, midState: null, last: null, view: 'optimizer', night: 2 };
+  const weekend = { mode: 'fresh', registrations: {}, guests: {}, runs: 0, midState: null, last: null, view: 'optimizer', night: 2 };
   let season = null;
   const charts = {};
 
@@ -108,6 +123,7 @@
     weekend.last = null;
     const ids = new Set(config.people.map((p) => p.id));
     for (const id of Object.keys(weekend.registrations)) if (!ids.has(id)) delete weekend.registrations[id];
+    for (const id of Object.keys(weekend.guests)) if (!ids.has(id)) delete weekend.guests[id];
     document.getElementById('season-result').innerHTML = '';
     document.getElementById('weekend-result').innerHTML = '';
     renderRegistrations();
@@ -140,11 +156,13 @@
   }
 
   function personName(id) {
+    if (M.isGuest(id)) return `${personName(id.slice(2))}'s guest`;
     const p = person(id);
     return p ? p.name : id;
   }
 
   function initials(id) {
+    if (M.isGuest(id)) return `${initials(id.slice(2))}+`;
     const name = personName(id).trim();
     const parts = name.split(/\s+/);
     return (parts.length > 1 ? parts[0][0] + parts[1][0] : name.slice(0, 2)).toUpperCase();
@@ -233,10 +251,20 @@
 
   /* Weekend */
 
+  /*
+   * The state before the weekend: priority, floor nights, and the known future weekends.
+   * The future comes from the simulated calendar, so planning has something to look at.
+   */
   function currentState() {
-    if (weekend.mode === 'fresh') return { balances: {}, floorNights: {} };
-    if (!weekend.midState && highs) weekend.midState = S.midSeasonState(highs, config);
-    return weekend.midState || { balances: {}, floorNights: {} };
+    if (!weekend.midState && highs) {
+      const t = weekend.mode === 'fresh' ? 0 : S.MID_SEASON_WEEKENDS;
+      const sim = weekend.mode === 'fresh' ? { balances: {}, floorNights: {}, attendance: S.drawSeasonAttendance(config.people, Number(config.settings.seed) || 1, S.SEASON_WEEKENDS, config.settings.leadWeeks) } : S.midSeasonState(highs, config);
+      const lead = Number(config.settings.leadWeeks) || 0;
+      const future = [];
+      for (let k = 1; k <= lead && t + k < sim.attendance.length; k++) future.push(S.visibleWeek(sim.attendance[t + k], k));
+      weekend.midState = { balances: sim.balances, floorNights: sim.floorNights, future };
+    }
+    return weekend.midState || { balances: {}, floorNights: {}, future: [] };
   }
 
   function weekendLabel() {
@@ -247,15 +275,19 @@
   function renderRegistrations() {
     const { balances, floorNights } = currentState();
     document.getElementById('weekend-sub').textContent =
-      weekend.mode === 'fresh' ? `${weekendLabel()} · everyone starts even` : `${weekendLabel()} · priority from ${S.MID_SEASON_WEEKENDS} simulated weekends`;
+      (weekend.mode === 'fresh' ? `${weekendLabel()} · everyone starts even` : `${weekendLabel()} · priority from ${S.MID_SEASON_WEEKENDS} simulated weekends`) +
+      (config.settings.planning ? ` · ${currentState().future.filter((w) => Object.keys(w.registrations).length).length} future weekends on the calendar` : '');
 
-    let html = `<thead><tr><th>Person</th>${M.NIGHTS.map((n) => `<th class="c">${n}</th>`).join('')}<th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.floor)}">Floor ⓘ</span></th></tr></thead><tbody>`;
+    let html = `<thead><tr><th>Person</th>${M.NIGHTS.map((n) => `<th class="c">${n}</th>`).join('')}<th><span data-tip="${esc(TIPS.guest)}">Guest ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.floor)}">Floor ⓘ</span></th></tr></thead><tbody>`;
     for (const p of config.people) {
       const reg = weekend.registrations[p.id] || [];
+      const g = weekend.guests[p.id];
+      const gv = g ? (g.type === 'partner' && g.advance ? 'partner+' : g.type) : '';
       html += `<tr><td><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
       for (let n = 0; n < 3; n++) {
         html += `<td class="c"><input type="checkbox" data-person="${esc(p.id)}" data-night="${n}" ${reg.includes(n) ? 'checked' : ''} aria-label="${esc(p.name)} ${NIGHT_NAMES[n]}"></td>`;
       }
+      html += `<td><select class="g-sel" data-guest="${esc(p.id)}">${GUEST_CHOICES.map(([v, l]) => `<option value="${v}" ${v === gv ? 'selected' : ''}>${l}</option>`).join('')}</select></td>`;
       html += `<td class="num">${fmt(-(balances[p.id] || 0))}</td><td class="num">${floorNights[p.id] || 0}</td></tr>`;
     }
     html += '</tbody>';
@@ -272,26 +304,38 @@
         if (weekend.registrations[id].length === 0) delete weekend.registrations[id];
       });
     }
+    for (const sel of table.querySelectorAll('select[data-guest]')) {
+      sel.addEventListener('change', () => {
+        const id = sel.dataset.guest;
+        if (!sel.value) delete weekend.guests[id];
+        else weekend.guests[id] = { type: sel.value.replace('+', ''), advance: sel.value === 'partner+' };
+      });
+    }
   }
 
   function setupWeekend() {
     onSeg('start-mode', (mode) => {
       weekend.mode = mode;
+      weekend.midState = null;
       weekend.last = null;
       document.getElementById('weekend-result').innerHTML = '';
       renderRegistrations();
     });
     document.getElementById('btn-random').addEventListener('click', () => {
-      weekend.registrations = S.drawAttendance(config.people, S.rngFromSeed(Math.floor(Math.random() * 1e9)));
+      const wk = S.drawWeekend(config.people, S.rngFromSeed(Math.floor(Math.random() * 1e9)), Number(config.settings.leadWeeks) || 0);
+      weekend.registrations = wk.registrations;
+      weekend.guests = wk.guests;
       renderRegistrations();
     });
     document.getElementById('btn-all-sat').addEventListener('click', () => {
       weekend.registrations = {};
       for (const p of config.people) weekend.registrations[p.id] = [2];
+      weekend.guests = {};
       renderRegistrations();
     });
     document.getElementById('btn-clear').addEventListener('click', () => {
       weekend.registrations = {};
+      weekend.guests = {};
       weekend.last = null;
       document.getElementById('weekend-result').innerHTML = '';
       renderRegistrations();
@@ -310,18 +354,22 @@
     const state = currentState();
     const couchCap = S.capSetting(config.settings);
     const seed = (Number(config.settings.seed) || 1) * 7919 + weekend.runs;
-    const base = { rooms: config.rooms, people: config.people, registrations: weekend.registrations, balances: state.balances, floorNights: state.floorNights };
+    const guests = {};
+    for (const [id, g] of Object.entries(weekend.guests)) if (weekend.registrations[id]) guests[id] = g;
+    const base = { rooms: config.rooms, people: config.people, registrations: weekend.registrations, guests, balances: state.balances, floorNights: state.floorNights };
     const t0 = performance.now();
-    const opt = M.solveWeekend(highs, { ...base, settings: { ...config.settings, couchCap }, rng: S.rngFromSeed(seed) });
+    const opt = M.solveWeekend(highs, { ...base, future: state.future, settings: { ...config.settings, couchCap }, rng: S.rngFromSeed(seed) });
     const ms = performance.now() - t0;
     if (opt.status !== 'Optimal') {
       document.getElementById('weekend-result').innerHTML = `<div class="card"><p class="note">Solver status: ${esc(opt.status)}</p></div>`;
       return;
     }
     const fc = S.firstComeWeekend({ ...base, rng: S.rngFromSeed(seed + 1) });
-    const assess = (result) => O.assessWeekend({ result, rooms: config.rooms, people: config.people, balances: state.balances, floorNights: state.floorNights, couchCap });
+    const everyone = M.withGuests(config.people, guests);
+    const assess = (result) => O.assessWeekend({ result, rooms: config.rooms, people: everyone, balances: state.balances, floorNights: state.floorNights, couchCap });
     weekend.last = {
       state,
+      guests,
       ms,
       optimizer: { result: opt, outcomes: assess(opt), update: M.updateBalances(state.balances, opt, config.rooms) },
       firstCome: { result: fc, outcomes: assess(fc), update: M.updateBalances(state.balances, fc, config.rooms) },
@@ -390,11 +438,12 @@
         let chips = '';
         if (cell) {
           const party = result.parties.find((p) => p.id === cell.partyId);
-          const cls = party.members.length === 2 ? 'couple' : 'single';
+          const cls = party.kind === 'couple' ? 'couple' : 'single';
           for (const m of party.members) {
             if (result.assignment[m] !== bed.id) continue;
             const here = cell.sleepers.includes(m);
-            chips += `<span class="chip ${cls} ${here ? '' : 'held'}" data-tip="${esc(personName(m))}${here ? '' : ' · held, arrives another night'}">${esc(initials(m))}</span>`;
+            const c = M.isGuest(m) ? 'guest' : cls;
+            chips += `<span class="chip ${c} ${here ? '' : 'held'}" data-tip="${esc(personName(m))}${here ? '' : ' · held, arrives another night'}">${esc(initials(m))}</span>`;
           }
         }
         html += `<div class="bed t-${bed.type} ${cell ? '' : 'free'}" data-tip="${esc(TYPE_LABELS[bed.type])}${cell ? '' : ' · free'}">${chips}</div>`;
@@ -413,7 +462,7 @@
     const xs = [];
     const ys = [];
     for (const party of run.result.parties) {
-      if (party.members.length !== 1) continue;
+      if (party.kind !== 'single') continue;
       const m = party.members[0];
       const bedId = run.result.assignment[m];
       xs.push(-(balances[m] || 0));
@@ -442,28 +491,36 @@
     const o = last.optimizer;
     const f = last.firstCome;
     const view = last[weekend.view];
-    const attending = o.result.parties.flatMap((p) => p.members);
+    const attending = o.result.parties.flatMap((p) => p.members.filter((m) => !M.isGuest(m)));
     const fairRows = [['Rotation (r)', balanceCorrelation(o, last.state.balances), balanceCorrelation(f, last.state.balances), 'r', false, 2, true, TIPS.rotation]];
     const free = view.result.freeBeds.map((list) => list.length);
     const nightButtons = M.NIGHTS.map((x, i) => [i, `${x} <span class="free-n">${free[i]} free</span>`]);
 
-    let html = `<div class="card"><div class="row"><h2>Optimizer vs first come</h2><span class="status mono">${attending.length} people · solved in ${Math.round(last.ms)} ms</span><div class="spacer"></div><button class="btn small" id="btn-reassign" data-tip="Solve again with a new random draw. Ties can come out differently.">Re-run</button></div>
+    let html = `<div class="card"><div class="row"><h2>Optimizer vs first come</h2><span class="status mono">${attending.length} people · ${Object.keys(last.guests).length} guests · solved in ${Math.round(last.ms)} ms${o.result.stages && o.result.stages.some((x) => x.startsWith('S2')) ? ' · planned ahead' : ''}</span><div class="spacer"></div><button class="btn small" id="btn-reassign" data-tip="Solve again with a new random draw. Ties can come out differently.">Re-run</button></div>
       <div class="cols wk-cols"><div>${compareTable([['Outcomes'], ...measureRows(o.outcomes.counts, f.outcomes.counts), ['Rotation'], ...fairRows], true)}</div>
       <div><div class="row">${seg('plan-method', METHODS, weekend.view)}${seg('plan-night', nightButtons, weekend.night)}</div>
       ${roomsHtml(view.result, view.outcomes, weekend.night)}
-      <div class="legend small"><span class="chip couple">AB</span>couple<span class="chip single">CD</span>single<span class="chip couple held">EF</span>held for partner<span class="bed-key"></span>free bed</div>
+      <div class="legend small"><span class="chip couple">AB</span>couple<span class="chip single">CD</span>single<span class="chip guest">GH+</span>guest<span class="chip couple held">EF</span>held for partner<span class="bed-key"></span>free bed</div>
       <details ${view.outcomes.incidents.length ? 'open' : ''}><summary>Issues · ${weekend.view === 'optimizer' ? 'optimizer' : 'first come'} (${view.outcomes.incidents.length})</summary>${incidentRows(view.outcomes.incidents, beds, false)}</details>
       </div></div></div>`;
 
     const order = [...attending].sort((a, b) => (last.state.balances[a] || 0) - (last.state.balances[b] || 0));
-    html += `<div class="card"><h3>Who got what, highest priority first</h3><div class="scroll"><table class="tight"><thead><tr><th>#</th><th>Person</th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th>Nights</th><th><span class="key opt"></span>Optimizer</th><th class="num">Priority after</th><th><span class="key fc"></span>First come</th></tr></thead><tbody>`;
+    html += `<div class="card"><h3>Who got what, highest priority first</h3><div class="scroll"><table class="tight"><thead><tr><th>#</th><th>Person</th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th class="nw">Nights</th><th><span class="key opt"></span>Optimizer</th><th>Guest</th><th class="num">Priority after</th><th><span class="key fc"></span>First come</th><th>Guest</th></tr></thead><tbody>`;
     order.forEach((id, i) => {
       const party = o.result.parties.find((p) => p.members.includes(id));
-      const bedName = (run) => {
-        const bedId = run.result.assignment[id];
+      const bedName = (run, who = id) => {
+        const bedId = run.result.assignment[who];
+        if (bedId === undefined) return '';
         return bedId === M.OVERFLOW ? 'No bed' : beds.get(bedId).name;
       };
-      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(-(last.state.balances[id] || 0))}</td><td class="mono">${nightsText(party.memberNights[id])}</td><td>${esc(bedName(o))}</td><td class="num">${fmt(-o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td></tr>`;
+      const g = last.guests[id];
+      const guestCell = (run) => {
+        if (!g) return '';
+        const gb = run.result.assignment[M.guestId(id)];
+        const where = gb === run.result.assignment[id] && gb !== M.OVERFLOW ? 'shares bed' : bedName(run, M.guestId(id));
+        return `<span class="chip guest sm">+</span>${GUEST_LABELS[g.type]}${g.advance ? ' (ahead)' : ''} · ${esc(where)}`;
+      };
+      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(-(last.state.balances[id] || 0))}</td><td class="mono nw">${nightsText(party.memberNights[id])}</td><td>${esc(bedName(o))}</td><td class="small">${guestCell(o)}</td><td class="num">${fmt(-o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td><td class="small muted">${guestCell(f)}</td></tr>`;
     });
     html += '</tbody></table></div></div>';
     out.innerHTML = html;
@@ -535,14 +592,23 @@
 
     html += `<div class="card"><h2>Priority by Person and Weekend <span class="i" data-tip="${esc(TIPS.priority)}">ⓘ</span></h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· above 0 = due a better room · hover a line for the name</span></div>
       <div class="two"><div><h3>Optimizer</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-o"></canvas></div></div>
-      <div><h3>First come</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
+      <div><h3>Stages</h3>
+<pre class="model mono">S0  members only, hosts alone        → member floor F0, no-bed N0
+S1  + partner guests (shared bed)     s.t. floor ≤ F0, no-bed ≤ N0
+S2  plan ahead (rollout): solve known future weeks with S1,
+    projected priority → weights; re-solve this week
+    s.t. floor, no-bed, mixed ≤ S1; couple queens, partners ≥ S1
+S3  roommate / any-bed guests fill free beds; members fixed
+partner guest booked ≥ 3 wk ahead: same queen bonus as a couple
+host pays the guest's bed value in priority (unless shared bed)</pre>
+<h3>First come</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
 
     html += `<div class="card"><div class="two"><div><h2>Priority per Night by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· (F) flexible schedule · nights stayed</span></div>
       <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-adv"></canvas></div></div>
       <div><h2>Floor Nights by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· couch, air mattress, no bed</span></div>
       <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-floor"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><div class="row"><h2>Bed Quality by Person and Weekend</h2><span class="mono muted small">0–10 · hover a cell for the bed</span><div class="spacer"></div>${seg('grid-method', METHODS, 'optimizer')}</div>
+    html += `<div class="card"><div class="row"><h2>Bed Quality by Person and Weekend</h2><span class="mono muted small">0–10 · + = brought a guest · hover a cell for the bed</span><div class="spacer"></div>${seg('grid-method', METHODS, 'optimizer')}</div>
       <div class="scroll" id="grid"></div>
       <div class="scale">0 ${RAMP.filter((_, i) => i % 2 === 0).map((c) => `<i style="background:${c}"></i>`).join('')} 10</div></div>`;
 
@@ -580,7 +646,8 @@
         const idx = Math.max(0, Math.min(RAMP.length - 1, Math.round((value / 10) * (RAMP.length - 1))));
         const ink = idx >= 6 ? '#ffffff' : '#0b0b0b';
         const title = `${p.name}: ${bedId === M.OVERFLOW ? 'no bed' : beds.get(bedId).name}, ${nightsText(party.memberNights[p.id])}`;
-        html += `<td class="cell" style="background:${RAMP[idx]};color:${ink}" title="${esc(title)}">${value}</td>`;
+        const g = week.guests && week.guests[p.id];
+        html += `<td class="cell" style="background:${RAMP[idx]};color:${ink}" data-tip="${esc(title)}${g ? ` · guest: ${GUEST_LABELS[g.type]}${g.advance ? ', booked ahead' : ''}` : ''}">${value}${g ? '<sup>+</sup>' : ''}</td>`;
       });
       html += `<td class="num">${fmt(-run.metrics.perPerson[p.id].advantage, 2)}</td></tr>`;
     }
@@ -706,6 +773,8 @@
   const SETTING_LEVELS = [
     ['strength', 'Rotation', 'How hard the optimizer gives the good beds to people with high priority. Off = priority is ignored. Max = priority almost decides alone.', [['Off', 0], ['Gentle', 1], ['Strong', 2], ['Max', 3.5]]],
     ['noise', 'Randomness', 'A small random tie-breaker. It makes equal choices come out differently each week, so the plan is not the same every time.', [['None', 0], ['Low', 0.75], ['Med', 1.5], ['High', 3]]],
+    ['planning', 'Plan ahead', 'Look at the known future weekends on the calendar before deciding this one. A person with a good bed booked later gets a modest bed now. This weekend never gets worse on the hard measures.', [['Off', 0], ['On', 1]]],
+    ['leadWeeks', 'Calendar lead', 'How many weeks ahead people who plan put their weekends on the calendar. The planner looks this far ahead.', [['2 wk', 2], ['4 wk', 4], ['6 wk', 6]]],
     ['genderPenalty', 'Same-gender rooms', 'How much the optimizer avoids shared rooms with singles of different genders. Strong can send someone to the couch to avoid a mixed room.', [['Ignore', 0], ['Prefer', 3], ['Strong', 8]]],
   ];
 
@@ -728,7 +797,7 @@
     el.innerHTML = html;
     for (const [key] of SETTING_LEVELS) {
       onSeg(`set-${key}`, (v) => {
-        config.settings[key] = Number(v);
+        config.settings[key] = key === 'planning' ? Number(v) === 1 : Number(v);
         configChanged();
       });
     }
@@ -794,7 +863,7 @@
 
   function renderPeopleEditor() {
     const el = document.getElementById('people-editor');
-    let html = '<thead><tr><th>Name</th><th>G</th><th>Partner</th><th class="num">Attend %</th><th>Nights</th><th class="c" title="Earlier sign-up in first come only">Flex</th><th></th></tr></thead><tbody>';
+    let html = '<thead><tr><th>Name</th><th>G</th><th>Partner</th><th class="num">Attend %</th><th>Nights</th><th class="c" title="Earlier sign-up in first come only">Flex</th><th class="num" data-tip="Chance of bringing a guest on a weekend.">Guest %</th><th data-tip="The usual guest type of this person.">Guest</th><th class="num" data-tip="Chance that this person puts a weekend on the calendar ahead of time.">Plan %</th><th></th></tr></thead><tbody>';
     config.people.forEach((p, i) => {
       html += `<tr><td><input data-i="${i}" data-f="name" value="${esc(p.name)}" class="w-name"></td>
         <td><select data-i="${i}" data-f="gender">${['M', 'F', 'X'].map((g) => `<option ${p.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></td>
@@ -802,6 +871,9 @@
         <td class="num"><input type="number" min="0" max="100" step="5" data-i="${i}" data-f="attend" value="${Math.round(p.attend * 100)}"></td>
         <td><select data-i="${i}" data-f="pattern">${Object.entries(S.PATTERN_LABELS).map(([k, v]) => `<option value="${k}" ${p.pattern === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
         <td class="c"><input type="checkbox" data-i="${i}" data-f="flexible" ${p.flexible ? 'checked' : ''}></td>
+        <td class="num"><input type="number" min="0" max="100" step="5" data-i="${i}" data-f="guestRate" value="${Math.round(S.guestRate(p) * 100)}"></td>
+        <td><select data-i="${i}" data-f="guestType">${Object.entries(GUEST_LABELS).map(([k, v]) => `<option value="${k}" ${S.guestType(p) === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
+        <td class="num"><input type="number" min="0" max="100" step="10" data-i="${i}" data-f="planAhead" value="${Math.round(S.planAhead(p) * 100)}"></td>
         <td><button class="btn small" data-del="${i}" title="Remove person">×</button></td></tr>`;
     });
     el.innerHTML = html + '</tbody>';
@@ -815,7 +887,7 @@
           renderPeopleEditor();
           return;
         }
-        if (f === 'attend') p.attend = Math.max(0, Math.min(100, Number(input.value) || 0)) / 100;
+        if (f === 'attend' || f === 'guestRate' || f === 'planAhead') p[f] = Math.max(0, Math.min(100, Number(input.value) || 0)) / 100;
         else if (f === 'flexible') p.flexible = input.checked;
         else p[f] = input.value;
         configChanged();
@@ -926,6 +998,15 @@ Avoidable floor  floor while a better option was free (gender-safe)
 Priority inv.    same gender + nights, Δpriority > 1, lower priority has better bed
 Mixed room       bedroom-night, singles of 2 genders
 Couple split     couple in 2 beds outside 1 twin room</pre>
+<h3>Stages</h3>
+<pre class="model mono">S0  members only, hosts alone        → member floor F0, no-bed N0
+S1  + partner guests (shared bed)     s.t. floor ≤ F0, no-bed ≤ N0
+S2  plan ahead (rollout): solve known future weeks with S1,
+    projected priority → weights; re-solve this week
+    s.t. floor, no-bed, mixed ≤ S1; couple queens, partners ≥ S1
+S3  roommate / any-bed guests fill free beds; members fixed
+partner guest booked ≥ 3 wk ahead: same queen bonus as a couple
+host pays the guest's bed value in priority (unless shared bed)</pre>
 <h3>First come</h3>
 <pre class="model mono">t ~ Exp(1)·(0.35 if flexible); in order of t, take the best free option
 couple without a couple option → 2 best free beds</pre>
