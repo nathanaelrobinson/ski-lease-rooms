@@ -201,3 +201,21 @@ test('planning ahead gives this weekend to the person without a known queen late
   assert.strictEqual(off.assignment.ivan, 'a-q');
   assert.strictEqual(on.assignment.kai, 'a-q');
 });
+
+test('a guest moves into a bed that frees up, only if moves are on', () => {
+  const rooms = [{ id: 'r', name: 'R', beds: [{ id: 'q', type: 'queen', value: 8 }, { id: 't', type: 'twin', value: 5 }] }];
+  const base = { rooms, people: config.people, registrations: { ivan: [0, 1], kai: [0] }, guests: { ivan: { type: 'any' } }, rng: Sim.rngFromSeed(16) };
+  const guestNights = (r) => r.parties.filter((p) => p.members.includes('g:ivan')).map((p) => [p.nights.join(), r.choices[r.parties.indexOf(p)].assign['g:ivan']]);
+  const off = Model.solveWeekend(highs, { ...base, settings: { movePenalty: 0 } });
+  assert.deepStrictEqual(guestNights(off), [['0,1', null]]);
+  const on = Model.solveWeekend(highs, { ...base, settings: { movePenalty: 30 } });
+  const placed = guestNights(on).filter(([, b]) => b !== null);
+  assert.deepStrictEqual(placed.map(([n]) => n), ['1']);
+});
+
+test('nobody moves on a weekend without trouble', () => {
+  const reg = { ivan: [0, 1, 2], kai: [1, 2], alex: [1, 2], blair: [1, 2] };
+  const r = Model.solveWeekend(highs, { ...config, registrations: reg, settings: { movePenalty: 30 }, rng: Sim.rngFromSeed(17) });
+  assert.ok(!r.stages.includes('S1m'));
+  assert.ok(r.parties.every((p) => !p.moved));
+});

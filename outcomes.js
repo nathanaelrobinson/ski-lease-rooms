@@ -27,6 +27,7 @@
     'guestNoBed',
     'partnerShared',
     'guestDisplace',
+    'roomMoves',
   ];
 
   function zeroCounts() {
@@ -262,6 +263,27 @@
         add('coupleSplit', null, party.members, result.choices[pi].beds.join('+'));
       }
     });
+
+    /* Room moves: a member who sleeps in a different bed on a later night of the same stay. */
+    const bedsByMember = {};
+    result.parties.forEach((p, pi) => {
+      if (p.kind === 'guest') return;
+      for (const m of p.members) {
+        if (Model.isGuest(m)) continue;
+        for (const n of p.memberNights[m]) (bedsByMember[m] = bedsByMember[m] || [])[n] = bedOf(pi, m);
+      }
+    });
+    for (const [m, list] of Object.entries(bedsByMember)) {
+      let prev;
+      list.forEach((b, n) => {
+        if (b === undefined) return;
+        if (prev !== undefined && b !== prev) {
+          counts.roomMoves++;
+          add('roomMoves', n, [m], [prev, b].map((x) => x || 'no bed').join('+'));
+        }
+        prev = b;
+      });
+    }
 
     return { counts, roomNights, incidents };
   }

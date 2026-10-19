@@ -39,6 +39,7 @@
     ['guestNights', 'Guest nights placed', 'guest-nights', false, 'Guest nights with a bed (shared with the host, or their own).'],
     ['guestNoBed', 'Guest nights, no bed', 'guest-nights', true, 'Guest nights with no bed left after all members were placed.'],
     ['partnerShared', 'Partner guest with host', 'hosts', false, 'Hosts whose partner guest shared their bed or a twin pair in their room.'],
+    ['roomMoves', 'Room moves', 'moves', true, 'A member who sleeps in a different bed on a later night of the same stay. The optimizer allows a move only on a weekend with trouble, and only when it clearly helps.'],
     ['guestDisplace', 'Member on floor, guest in bed', 'person-nights', true, 'A member slept on the floor while a guest had a real bed that night. The optimizer never allows this.'],
   ];
   /* Context rows are not issues. The page shows them without a better or worse mark. */
@@ -75,6 +76,7 @@
     coupleSplit: 'Couple split',
     capExcess: 'Over couch cap',
     guestNoBed: 'Guest without bed',
+    roomMoves: 'Room move',
     guestDisplace: 'Member on floor, guest in bed',
   };
   /* Sequential blue ramp from the chart palette. Index 0 is the lowest value. */
@@ -994,6 +996,7 @@
     ['strength', 'Rotation', 'How hard the optimizer gives the good beds to people with high priority. Off = priority is ignored. Max = priority almost decides alone.', [['Off', 0], ['Gentle', 1], ['Strong', 2], ['Max', 3.5]]],
     ['noise', 'Randomness', 'A small random tie-breaker. It makes equal choices come out differently each week, so the plan is not the same every time.', [['None', 0], ['Low', 0.75], ['Med', 1.5], ['High', 3]]],
     ['planning', 'Plan ahead', 'Look at the known future weekends on the calendar before deciding this one. A person with a good bed booked later gets a modest bed now. This weekend never gets worse on the hard measures.', [['Off', 0], ['On', 1]]],
+    ['movePenalty', 'Room moves', 'Never: everyone keeps one bed for the whole stay. Rare: a person may switch beds once, only on a weekend with trouble (someone on the floor or without a bed, or a pair without a queen while one is free). OK: switches happen more easily.', [['Never', 0], ['Rare', 30], ['OK', 8]]],
     ['leadWeeks', 'Calendar lead', 'How many weeks ahead people who plan put their weekends on the calendar. The planner looks this far ahead.', [['2 wk', 2], ['4 wk', 4], ['6 wk', 6]]],
     ['genderPenalty', 'Same-gender rooms', 'How much the optimizer avoids shared rooms with singles of different genders. Strong can send someone to the couch to avoid a mixed room.', [['Ignore', 0], ['Prefer', 3], ['Strong', 8]]],
   ];
@@ -1225,7 +1228,10 @@ S1  + partner guests (shared bed)     s.t. floor ≤ F0, no-bed ≤ N0
 S2  plan ahead (rollout): solve known future weeks with S1,
     projected priority → weights; re-solve this week
     s.t. floor, no-bed, mixed ≤ S1; couple queens, partners ≥ S1
+S1m only if trouble (floor/no bed, or a pair without a queen while one is free):
+    allow one bed switch per stay at cost 30 (Setup: Room moves); keep S1 hard measures
 S3  roommate / any-bed guests fill free beds; members fixed
+S3m only if a guest has no bed while a bed is free on some night: guests may switch
 partner guest booked ≥ 3 wk ahead: same queen bonus as a couple
 host pays the guest's bed value in priority (unless shared bed)</pre>
 <h3>First come</h3>

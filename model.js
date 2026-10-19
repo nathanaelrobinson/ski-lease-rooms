@@ -32,6 +32,13 @@
    * and larger than any weighted bed value. Queens go to member couples first, then to pairs, then to singles.
    */
   const PAIR_QUEEN_BONUS = 2500;
+  /* Credit for each night a pair spends in a queen during a split stay. It pays for one move. */
+  const PAIR_NIGHT_CREDIT = 40;
+  /*
+   * A stay of two or more nights can move to another bed one time. Each move costs settings.movePenalty points.
+   * The default (30) is larger than any normal bed upgrade, so a move only happens if it gets a pair into a queen,
+   * a person off the floor, or a person into a bed. A penalty of 0 turns moves off.
+   */
   const ADVANCE_WEEKS = 3;
   /* Each floor night costs FLOOR_PENALTY points, independent of the weight. */
   const FLOOR_PENALTY = 4;
@@ -55,6 +62,7 @@
     noise: 1.5,
     genderPenalty: 3,
     couchCap: null,
+    movePenalty: 30,
     planning: true,
     leadWeeks: 4,
   };
@@ -205,6 +213,47 @@
     return options;
   }
 
+  /* The same party restricted to some of its nights. */
+  function subParty(party, nights) {
+    const memberNights = {};
+    for (const m of party.members) memberNights[m] = party.memberNights[m].filter((n) => nights.includes(n));
+    return { ...party, nights, memberNights };
+  }
+
+  /*
+   * Move options: the stay splits into two runs of nights, each in its own bed.
+   * Each run uses a normal option of the party restricted to its nights.
+   */
+  function moveOptions(party, beds) {
+    if (party.nights.length < 2) return [];
+    const out = [];
+    for (let k = 1; k < party.nights.length; k++) {
+      const p1 = subParty(party, party.nights.slice(0, k));
+      const p2 = subParty(party, party.nights.slice(k));
+      if (party.members.some((m) => !isGuest(m) && (p1.memberNights[m].length === 0 || p2.memberNights[m].length === 0))) continue;
+      /* A guest may have a bed for only part of the stay. A member always has a bed or a floor spot in both parts. */
+      const keep = (o) => !o.alone && (party.kind === 'guest' || !o.overflow);
+      const o1 = buildOptions(p1, beds).filter(keep);
+      const o2 = buildOptions(p2, beds).filter(keep);
+      for (const a of o1) {
+        for (const b of o2) {
+          if (a.beds.join() === b.beds.join()) continue;
+          out.push({ move: true, segs: [{ party: p1, option: a }, { party: p2, option: b }], beds: [...new Set([...a.beds, ...b.beds])], assign: {} });
+        }
+      }
+    }
+    return out;
+  }
+
+  /* The beds an option uses on night n. */
+  function bedsOn(party, option, n) {
+    if (option.segs) {
+      const seg = option.segs.find((s) => s.party.nights.includes(n));
+      return seg ? seg.option.beds : [];
+    }
+    return party.nights.includes(n) ? option.beds : [];
+  }
+
   /*
    * Calculate the priority weight of each member who attends.
    * The weight is exp(-strength * balance / BALANCE_SCALE), limited to the range from 1/MAX_WEIGHT to MAX_WEIGHT.
@@ -226,6 +275,7 @@
   /* Count the floor nights of an option that go above the couch cap. A cap of null turns the cap off. */
   function capExcess(party, option, floorNights, cap, bedById) {
     if (cap === null || cap === undefined || cap === '') return 0;
+    if (option.segs) return option.segs.reduce((t, s) => t + capExcess(s.party, s.option, floorNights, cap, bedById), 0);
     let excess = 0;
     for (const m of party.members) {
       if (isGuest(m) || !isFloor(option.assign[m], bedById)) continue;
@@ -259,6 +309,15 @@
    * together = a partner guest shares with the host.
    */
   function optionMeasures(party, option, bedById) {
+    if (option.segs) {
+      const parts = option.segs.map((s) => optionMeasures(s.party, s.option, bedById));
+      return {
+        floor: parts.reduce((t, x) => t + x.floor, 0),
+        nobed: parts.reduce((t, x) => t + x.nobed, 0),
+        bonus: parts.every((x) => x.bonus) ? 1 : 0,
+        together: parts.every((x) => x.together) ? 1 : 0,
+      };
+    }
     let floor = 0;
     let nobed = 0;
     for (const m of party.members) {
@@ -279,41 +338,61 @@
    */
   function weekBlock(tag, parties, beds, ctx) {
     const { bedById, personById, settings, rng, weights, floorNights, mode } = ctx;
+    /* Score one plain option. bonusOn = false leaves out the one-time queen bonus (for the parts of a split stay). */
+    const scoreOption = (party, option, jitter, bonusOn) => {
+      let score = 0;
+      if (party.kind === 'guest') {
+        const bedId = option.assign[party.members[0]];
+        const n = party.nights.length;
+        const hostWeight = (weights && weights[party.host]) || 1;
+        if (bedId === OVERFLOW) score -= GUEST_NOBED_PENALTY * n * (party.advance ? 2 : 1) * (1 + hostWeight / MAX_WEIGHT);
+        else {
+          const bed = bedById.get(bedId);
+          score += (hostWeight * (bed.value + 0.1 * jitter) * 0.1 + BASE_WEIGHT * bed.value) * n;
+          if (party.guestType === 'roommate' && ctx.hostRoom && ctx.hostRoom[party.host] === bed.roomId) score += ROOMMATE_BONUS * n;
+        }
+        return score;
+      }
+      for (const m of party.members) {
+        if (isGuest(m)) continue;
+        const n = party.memberNights[m].length;
+        const bedId = option.assign[m];
+        const value = bedId === OVERFLOW ? 0 : bedById.get(bedId).value;
+        const w = mode === 'weighted' ? weights[m] : 0;
+        const j = mode === 'weighted' ? jitter : 0.2 * jitter;
+        score += (w * (value + j) + BASE_WEIGHT * value) * n;
+        if (isFloor(bedId, bedById)) score -= FLOOR_PENALTY * n;
+      }
+      const meas = optionMeasures(party, option, bedById);
+      if (bonusOn && meas.bonus) score += COUPLE_QUEEN_BONUS;
+      else if (bonusOn && option.queen && party.kind === 'hostPartner') score += PAIR_QUEEN_BONUS;
+      if (option.alone) score -= ALONE_PENALTY * party.nights.length;
+      score -= CAP_PENALTY * capExcess(party, option, floorNights || {}, settings.couchCap, bedById);
+      score -= OVERFLOW_PENALTY * meas.nobed;
+      return score;
+    };
+
+    const movePenalty = Number(settings.movePenalty) || 0;
     const vars = [];
     parties.forEach((party, pi) => {
-      for (const option of buildOptions(party, beds)) {
+      const options = buildOptions(party, beds);
+      if (ctx.allowMoves && movePenalty > 0) options.push(...moveOptions(party, beds));
+      for (const option of options) {
         if (ctx.forceAlone && party.kind === 'hostPartner' && !option.alone && !option.overflow) continue;
-        if (ctx.blocked && party.nights.some((n) => option.beds.some((b) => ctx.blocked(b, n)))) continue;
+        if (ctx.blocked && party.nights.some((n) => bedsOn(party, option, n).some((b) => ctx.blocked(b, n)))) continue;
         const jitter = rng() * settings.noise;
-        let score = 0;
-        if (party.kind === 'guest') {
-          const bedId = option.assign[party.members[0]];
-          const n = party.nights.length;
-          const hostWeight = (weights && weights[party.host]) || 1;
-          if (bedId === OVERFLOW) score -= GUEST_NOBED_PENALTY * n * (party.advance ? 2 : 1) * (1 + hostWeight / MAX_WEIGHT);
-          else {
-            const bed = bedById.get(bedId);
-            score += (hostWeight * (bed.value + 0.1 * jitter) * 0.1 + BASE_WEIGHT * bed.value) * n;
-            if (party.guestType === 'roommate' && ctx.hostRoom && ctx.hostRoom[party.host] === bed.roomId) score += ROOMMATE_BONUS * n;
+        /* A split stay gets the queen bonus only if every part is in a queen or king. */
+        let score;
+        if (option.segs) {
+          score = option.segs.reduce((t, sg) => t + scoreOption(sg.party, sg.option, jitter, false), 0) - movePenalty;
+          if (option.segs.every((sg) => sg.option.queen)) {
+            if (optionMeasures(party, option, bedById).bonus) score += COUPLE_QUEEN_BONUS;
+            else if (party.kind === 'hostPartner') score += PAIR_QUEEN_BONUS;
+          } else if (party.kind === 'couple' || party.kind === 'hostPartner') {
+            /* A pair that gets a queen for part of the stay: PAIR_NIGHT_CREDIT for each queen night. */
+            for (const sg of option.segs) if (sg.option.queen) score += PAIR_NIGHT_CREDIT * sg.party.nights.length;
           }
-        } else {
-          for (const m of party.members) {
-            if (isGuest(m)) continue;
-            const n = party.memberNights[m].length;
-            const bedId = option.assign[m];
-            const value = bedId === OVERFLOW ? 0 : bedById.get(bedId).value;
-            const w = mode === 'weighted' ? weights[m] : 0;
-            const j = mode === 'weighted' ? jitter : 0.2 * jitter;
-            score += (w * (value + j) + BASE_WEIGHT * value) * n;
-            if (isFloor(bedId, bedById)) score -= FLOOR_PENALTY * n;
-          }
-          const meas = optionMeasures(party, option, bedById);
-          if (meas.bonus) score += COUPLE_QUEEN_BONUS;
-          else if (option.queen && party.kind === 'hostPartner') score += PAIR_QUEEN_BONUS;
-          if (option.alone) score -= ALONE_PENALTY * party.nights.length;
-          score -= CAP_PENALTY * capExcess(party, option, floorNights || {}, settings.couchCap, bedById);
-          score -= OVERFLOW_PENALTY * meas.nobed;
-        }
+        } else score = scoreOption(party, option, jitter, true);
         vars.push({ name: `${tag}y${vars.length}`, partyIndex: pi, option, score });
       }
     });
@@ -332,7 +411,7 @@
     /* On each night, each bed holds at most one party. */
     for (const bed of beds) {
       for (let n = 0; n < NIGHTS.length; n++) {
-        const t = vars.filter((v) => v.option.beds.includes(bed.id) && parties[v.partyIndex].nights.includes(n)).map((v) => term(1, v.name));
+        const t = vars.filter((v) => bedsOn(parties[v.partyIndex], v.option, n).includes(bed.id)).map((v) => term(1, v.name));
         if (t.length > 1) rows.push(`${tag}b${rows.length}:\n${lines(t)} <= 1`);
       }
     }
@@ -353,7 +432,7 @@
             const party = parties[v.partyIndex];
             const alone = party.kind === 'single' || (party.kind === 'hostPartner' && v.option.alone);
             if (!alone || !party.nights.includes(n)) continue;
-            if (!v.option.beds.some((b) => bedIds.includes(b))) continue;
+            if (!bedsOn(party, v.option, n).some((b) => bedIds.includes(b))) continue;
             const g = personById.get(party.members[0]).gender;
             if (byGender[g]) byGender[g].push(v.name);
           }
@@ -449,6 +528,36 @@
     stages.push('S1');
 
     /*
+     * S1m: moves. Only on a weekend with trouble after S1: a member on the floor or with no bed, or a pair
+     * (couple or host with partner guest) without a queen. The new plan must keep the S1 hard measures.
+     */
+    /* A move can only help if a better bed is free on some night of the stay. */
+    const usedOn = NIGHTS.map(() => new Set());
+    members.forEach((p, pi) => {
+      for (const n of p.nights) for (const b of choices[pi].beds) usedOn[n].add(b);
+    });
+    const freeOn = (n, test) => beds.some((b) => !usedOn[n].has(b.id) && test(b));
+    const trouble = members.some((p, pi) => {
+      const c = choices[pi];
+      if ((p.kind === 'couple' || p.kind === 'hostPartner') && !c.queen) return p.nights.some((n) => freeOn(n, (b) => QUEEN_TYPES.has(b.type)));
+      const onFloor = p.members.some((m) => !isGuest(m) && isFloor(c.assign[m] === undefined ? OVERFLOW : c.assign[m], bedById));
+      return onFloor && p.nights.some((n) => freeOn(n, (b) => !FLOOR_TYPES.has(b.type)));
+    });
+    const allowMoves = Number(settings.movePenalty) > 0 && trouble;
+    if (allowMoves) {
+      const bm = weekBlock('w', members, beds, { ...ctx, allowMoves: true });
+      const sm = solveLP(highs, bm.obj, [...bm.rows, ...limitRows(bm, limits, bedById)], bm.bins);
+      if (isOk(sm)) {
+        const rm = readBlock(bm, sm, bedById);
+        if (rm.choices.some((c) => c.segs)) {
+          choices = rm.choices;
+          objective = sm.ObjectiveValue;
+          stages.push('S1m');
+        }
+      }
+    }
+
+    /*
      * S2: planning window (rollout). Play the known future weekends forward with the one-weekend model.
      * The result is the projected balance of each member. A member with good beds ahead looks paid now.
      * This weekend is then solved again with the projected weights and must keep the S1 hard measures.
@@ -471,7 +580,7 @@
         projected = next;
       }
       const planWeights = priorityWeights(attendees, projected, settings.strength);
-      const b2 = weekBlock('w', members, beds, { ...ctx, weights: planWeights });
+      const b2 = weekBlock('w', members, beds, { ...ctx, weights: planWeights, allowMoves });
       const s2 = solveLP(highs, b2.obj, [...b2.rows, ...limitRows(b2, limits, bedById)], b2.bins);
       if (isOk(s2)) {
         choices = readBlock(b2, s2, bedById).choices;
@@ -484,8 +593,23 @@
     const parties = [];
     const finalChoices = [];
     const s3Guests = [...guestParties];
+    /* A stay with a move becomes one party for each run of nights. */
+    const expandedMembers = [];
+    const expandedChoices = [];
     members.forEach((party, pi) => {
       const option = choices[pi];
+      if (option.segs) {
+        option.segs.forEach((sg, k) => {
+          expandedMembers.push({ ...sg.party, id: `${party.id}#${k + 1}`, moved: true });
+          expandedChoices.push(sg.option);
+        });
+      } else {
+        expandedMembers.push(party);
+        expandedChoices.push(option);
+      }
+    });
+    expandedMembers.forEach((party, pi) => {
+      const option = expandedChoices[pi];
       if (party.kind === 'hostPartner' && (option.alone || option.overflow)) {
         const host = party.host;
         parties.push({ id: `s_${host}`, kind: 'single', members: [host], nights: party.nights, memberNights: { [host]: party.nights }, hadPartnerGuest: true });
@@ -511,16 +635,39 @@
           if (!isGuest(m) && bedId !== OVERFLOW && bedId !== undefined) hostRoom[m] = bedById.get(bedId).roomId;
         }
       });
-      const b3 = weekBlock('g', s3Guests, beds, { ...ctx, blocked: (b, n) => used[n].has(b), hostRoom, settings: { ...settings, genderPenalty: 0 } });
+      const ctx3 = { ...ctx, blocked: (b, n) => used[n].has(b), hostRoom, settings: { ...settings, genderPenalty: 0 } };
+      const b3 = weekBlock('g', s3Guests, beds, ctx3);
       const s3 = solveLP(highs, b3.obj, b3.rows, b3.bins);
       if (isOk(s3)) {
-        const r3 = readBlock(b3, s3, bedById);
+        let r3 = readBlock(b3, s3, bedById);
+        stages.push('S3');
+        /* S3m: a guest with no bed may move if a bed is free on some night of the stay. */
+        const taken = NIGHTS.map((_, n) => new Set(used[n]));
         s3Guests.forEach((g, i) => {
-          parties.push(g);
-          finalChoices.push(r3.choices[i]);
+          for (const n of g.nights) for (const b of r3.choices[i].beds) taken[n].add(b);
+        });
+        const guestTrouble = s3Guests.some((g, i) => r3.choices[i].overflow && g.nights.some((n) => beds.some((b) => !taken[n].has(b.id))));
+        if (Number(settings.movePenalty) > 0 && guestTrouble) {
+          const b3m = weekBlock('g', s3Guests, beds, { ...ctx3, allowMoves: true });
+          const s3m = solveLP(highs, b3m.obj, b3m.rows, b3m.bins);
+          if (isOk(s3m)) {
+            r3 = readBlock(b3m, s3m, bedById);
+            stages.push('S3m');
+          }
+        }
+        s3Guests.forEach((g, i) => {
+          const option = r3.choices[i];
+          if (option.segs) {
+            option.segs.forEach((sg, k) => {
+              parties.push({ ...sg.party, id: `${g.id}#${k + 1}`, moved: true });
+              finalChoices.push(sg.option);
+            });
+          } else {
+            parties.push(g);
+            finalChoices.push(option);
+          }
         });
       }
-      stages.push('S3');
     }
 
     return { status: 'Optimal', objective, weights, projected, stages, ...finishResult(parties, finalChoices, beds) };

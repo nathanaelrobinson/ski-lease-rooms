@@ -124,3 +124,11 @@ History replay:
 - Wasted queen: a single in a queen or king on a night when a pair did not get one (a couple, or a host with a partner guest, in a twin pair, a full, an air mattress, or apart).
 - Queen order: member couples and booked-ahead partner pairs (bonus 5000), then late partner pairs (bonus 2500), then singles by priority.
 - The Season tab has a weekend detail: the measures of one weekend, the room drawing of both methods side by side for each night, and who slept where.
+
+## Room moves (added 2026-10-19)
+
+- Rule: a stay keeps one bed, but a person may switch beds one time on a weekend with trouble. Setting: Room moves = Never (0), Rare (30, default), or OK (8). The number is the cost of one move.
+- Trouble for members (stage S1m): after S1, a member is on the floor or has no bed while a non-floor bed is free on a night of the stay, or a pair has no queen while a queen or king is free on a night of the stay. S1m keeps the S1 hard measures.
+- Trouble for guests (stage S3m): after S3, a guest has no bed while a bed is free on a night of the stay. A guest can have a bed for part of the stay.
+- A split stay gets the full queen bonus only if every part is in a queen or king. A pair gets 40 points for each queen night in a split stay, enough to pay for one move.
+- Measure: Room moves (a member in a different bed on a later night of the same stay). The 2025 actual season had 7.
