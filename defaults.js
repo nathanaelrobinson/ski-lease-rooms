@@ -74,7 +74,7 @@
     P('quinn', 'Quinn', 'M', null, 0.45, 'mixed', false),
   ];
 
-  const settings = { strength: 2, noise: 1.5, genderPenalty: 3, coupleBonus: 2, couchCap: 4, seed: 2027 };
+  const settings = { strength: 2, noise: 1.5, genderPenalty: 3, couchCap: 4, seed: 2027 };
 
   return { rooms, people, settings };
 });

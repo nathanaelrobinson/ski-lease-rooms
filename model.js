@@ -11,8 +11,15 @@
 
   const NIGHTS = ['Thu', 'Fri', 'Sat'];
   const OVERFLOW = null;
-  const OVERFLOW_PENALTY = 1000;
+  const OVERFLOW_PENALTY = 10000;
   const CAP_PENALTY = 300;
+  /*
+   * A couple in a real queen gets COUPLE_QUEEN_BONUS points one time, for any number of nights.
+   * The bonus is larger than any weighted bed value, so the solver puts as many couples as possible in queens.
+   * The bonus does not change with the nights, so the balances decide which couples get the queens.
+   * Singles get a queen only if no couple can use it. OVERFLOW_PENALTY stays larger than the bonus.
+   */
+  const COUPLE_QUEEN_BONUS = 5000;
   /*
    * Each floor night costs FLOOR_PENALTY points, independent of the weight.
    * Without this cost, a person with a low weight can go to the couch while a bed is free.
@@ -28,7 +35,6 @@
     strength: 2,
     noise: 1.5,
     genderPenalty: 3,
-    coupleBonus: 2,
     couchCap: null,
   };
 
@@ -187,7 +193,7 @@
           const value = bedId === OVERFLOW ? 0 : bedById.get(bedId).value;
           score += (weights[m] * (value + jitter) + BASE_WEIGHT * value) * n;
         }
-        if (option.queen) score += settings.coupleBonus * party.nights.length;
+        if (option.queen) score += COUPLE_QUEEN_BONUS;
         for (const m of party.members) {
           if (isFloor(option.assign[m], bedById)) score -= FLOOR_PENALTY * party.memberNights[m].length;
         }
@@ -333,8 +339,10 @@
 
   /*
    * Update the balances after one weekend.
-   * On each night, a person gets the value of their bed minus the average value of all person-nights.
-   * An overflow night has a value of 0. The changes on each night add up to zero.
+   * People who sleep as a couple and people who sleep as a single are in two separate pools.
+   * On each night, a person gets the value of their bed minus the average value of their pool.
+   * A partner who comes alone is in the single pool for that weekend.
+   * An overflow night has a value of 0. The changes in each pool on each night add up to zero.
    */
   function updateBalances(balances, result, rooms) {
     const bedById = new Map(flattenBeds(rooms).map((b) => [b.id, b]));
@@ -343,19 +351,21 @@
     for (let n = 0; n < NIGHTS.length; n++) {
       const rows = [];
       for (const party of result.parties) {
+        const pool = party.members.length === 2 ? 'couple' : 'single';
         for (const m of party.members) {
           if (!party.memberNights[m].includes(n)) continue;
           const bedId = result.assignment[m];
-          rows.push({ personId: m, value: bedId === OVERFLOW ? 0 : bedById.get(bedId).value });
+          rows.push({ personId: m, pool, value: bedId === OVERFLOW ? 0 : bedById.get(bedId).value });
         }
       }
-      if (rows.length === 0) {
-        nightly.push({ average: null, rows });
-        continue;
+      const averages = {};
+      for (const pool of ['couple', 'single']) {
+        const list = rows.filter((r) => r.pool === pool);
+        if (list.length === 0) continue;
+        averages[pool] = list.reduce((s, r) => s + r.value, 0) / list.length;
       }
-      const average = rows.reduce((s, r) => s + r.value, 0) / rows.length;
-      for (const r of rows) next[r.personId] = (next[r.personId] || 0) + r.value - average;
-      nightly.push({ average, rows });
+      for (const r of rows) next[r.personId] = (next[r.personId] || 0) + r.value - averages[r.pool];
+      nightly.push({ averages, rows });
     }
     return { balances: next, nightly };
   }

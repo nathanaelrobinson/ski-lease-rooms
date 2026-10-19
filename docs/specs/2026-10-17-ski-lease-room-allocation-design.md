@@ -22,7 +22,9 @@ The demo is a static web page on GitHub Pages. It simulates a season and a singl
 
 ## Fairness
 
-Each person has a running balance. For each night, the tool computes the average value of the occupied person-nights. The balance of each person on that night increases by the value of their bed minus that average. Both partners in a couple get the full value of their shared bed. An overflow night has a value of 0. The balances on each night add up to zero.
+Each person has a running balance. People who sleep as a couple and people who sleep as a single on a weekend are in two separate pools. For each night, the tool computes the average bed value of each pool. Each person's balance then increases by the value of their bed minus the average of their pool. A partner who comes alone is in the single pool for that weekend. A no-bed night has a value of 0. The balances in each pool on each night add up to zero.
+
+Decision on 2026-10-19: couples get the queens first. With one shared pool, couples always drift up and singles drift down. Then the absolute weights saturate and rotation inside each group stops. Two pools keep the rotation inside each group. Singles get the queens that couples do not need.
 
 ## Solver model
 
@@ -31,7 +33,7 @@ The model is a mixed-integer program that HiGHS solves in the browser.
 - Variables: one binary variable for each pair of party and placement option.
 - Each party takes exactly one option.
 - On each night, each bed holds at most one option.
-- Objective (maximize): the sum of bed value times priority weight, over each person and each night. The objective also adds a random term and a bonus for couples in queens. It subtracts the gender penalty and the overflow penalty.
+- Objective (maximize): the sum of bed value times priority weight, over each person and each night. The objective also adds a random term and a bonus of 5000 for each couple in a real queen, one time for any number of nights. It subtracts the floor penalty, the couch cap penalty, the gender penalty, and a no-bed penalty of 10000 for each person-night.
 - Priority weight: `exp(-strength * balance / 6)`, limited to the range from 1/50 to 50. The weight is absolute. A first version used a weight relative to the lowest and highest balance, but its push was too weak. Tests showed that it gave a larger spread than first come.
 - The random term and the base term: each person-night adds `weight * (value + jitter) + 0.1 * value`. The jitter is uniform in `[0, noise]`. The scale by weight prevents a move to a worse bed type.
 
@@ -41,7 +43,7 @@ The model is a mixed-integer program that HiGHS solves in the browser.
 
 `outcomes.js` measures each weekend for both methods:
 
-- Bedroom utilization: occupied bed-nights divided by available bed-nights, for real beds in bedrooms.
+- Bedroom utilization: sleepers divided by sleeping spaces, for real beds in bedrooms. A queen has 2 spaces.
 - Single in queen: a queen-night with one sleeper.
 - Wasted queen: a single in a queen on a night when a couple uses two beds and a person is on the floor.
 - Held-empty queen: a queen that a couple holds for a partner who is absent that night.
@@ -60,6 +62,8 @@ The baseline uses the same attendance. Each party gets a random sign-up time. Pe
 - Season tab: both methods on the same attendance. A grid of people by weekends colored by bed value. Charts: "Running Balance by Person and Weekend", "Average Bed Value per Night by Person", "Couch and Overflow Nights by Person". Summary numbers: the standard deviation and the range of advantage (balance divided by nights), the gap between flexible singles and other singles, the gap between couples and singles, and the couch and overflow nights.
 
 Chart titles describe the data. They do not state a conclusion.
+
+The Weekend tab runs both methods on the same registrations. It shows a table of measures (Opt, FC, Δ) and draws each room for one night. Each bed is a shape sized by type, with initials chips for the sleepers. Colors: teal for the optimizer, neutral gray for first come, violet for couples, and teal for singles. The colorblind validator passed for the teal and violet pair and for teal against gray.
 
 ## Files
 

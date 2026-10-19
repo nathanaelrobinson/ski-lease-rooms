@@ -158,3 +158,13 @@ test('the outcomes count a dominated floor night', () => {
   assert.strictEqual(o.counts.dominatedFloor, 2);
   assert.strictEqual(o.counts.capExcess, 1);
 });
+
+test('couples get the queens first, and the lower balance gets the better queen', () => {
+  /* Two couples and one single with a very low balance. Two queens. */
+  const reg = { alex: [0, 1, 2], blair: [0, 1, 2], gabe: [2], hana: [2], kai: [2] };
+  const balances = { alex: 8, blair: 8, gabe: -5, hana: -5, kai: -30 };
+  const result = Model.solveWeekend(highs, { ...config, registrations: reg, balances, settings: { noise: 0 }, rng: Sim.rngFromSeed(12) });
+  assert.strictEqual(result.assignment.gabe, 'primary-q');
+  assert.strictEqual(result.assignment.alex, 'lake-q');
+  assert.notStrictEqual(bedById.get(result.assignment.kai).type, 'queen');
+});

@@ -64,12 +64,17 @@
     };
     const valueOf = (bedId) => (bedId === Model.OVERFLOW ? 0 : bedById.get(bedId).value);
 
-    /* Occupancy of each room on each night. A held bed with no sleeper is not occupied. */
+    /*
+     * Utilization counts sleeping spaces, not beds. A queen or an air queen has 2 spaces. Other beds have 1.
+     * A single in a queen uses 1 of 2 spaces. A held bed with no sleeper uses 0 spaces.
+     */
+    const spaces = (bed) => (Model.SHARED_TYPES.has(bed.type) ? 2 : 1);
+    const sleepers = (bedId, n) => (result.plan[n][bedId] || { sleepers: [] }).sleepers.length;
     const roomNights = {};
     for (const room of rooms) {
       roomNights[room.id] = Model.NIGHTS.map((_, n) => ({
-        occupied: room.beds.filter((b) => (result.plan[n][b.id] || { sleepers: [] }).sleepers.length > 0).length,
-        total: room.beds.length,
+        occupied: room.beds.reduce((s, b) => s + sleepers(b.id, n), 0),
+        total: room.beds.reduce((s, b) => s + spaces(b), 0),
       }));
     }
 
@@ -77,9 +82,8 @@
     const bedroomBeds = beds.filter((b) => !b.common && !Model.FLOOR_TYPES.has(b.type));
     for (let n = 0; n < Model.NIGHTS.length; n++) {
       for (const bed of bedroomBeds) {
-        counts.bedroomNights++;
-        const cell = result.plan[n][bed.id];
-        if (cell && cell.sleepers.length > 0) counts.bedroomOccupied++;
+        counts.bedroomNights += spaces(bed);
+        counts.bedroomOccupied += sleepers(bed.id, n);
       }
     }
 
