@@ -32,19 +32,18 @@
     ['heldEmptyQueen', 'Held-empty queen', 'queen-nights', true, 'A queen kept empty for a partner who arrives on a later night.'],
     ['floorNights', 'Floor nights', 'person-nights', true, 'Nights on a couch, an air mattress, or no bed.'],
     ['dominatedFloor', 'Avoidable floor', 'person-nights', true, 'Someone on the floor while a better bed was free for all of their nights, without a mixed-gender room.'],
-    ['priorityInversion', 'Priority inversion', 'pairs', true, 'Two singles of the same gender on the same nights, and the luckier one got the better bed.'],
+    ['priorityInversion', 'Priority inversion', 'pairs', true, 'Two singles of the same gender on the same nights, and the one with lower priority got the better bed.'],
     ['mixedRoom', 'Mixed-gender room', 'room-nights', true, 'A bedroom on a night shared by singles of different genders.'],
     ['coupleSplit', 'Couple split', 'couples', true, 'A couple that sleeps in two separate beds that are not a twin pair in one room.'],
     ['capExcess', 'Over couch cap', 'person-nights', true, 'Floor nights above the season couch cap.'],
   ];
   const TIPS = {
-    luck: 'Luck = bed quality a person got above the average of their group (couples or singles), added up over past weekends. Low luck = higher priority for the good beds.',
-    priority: 'Priority multiplier from luck. It multiplies the bed quality in the optimizer, so low-luck people win the better beds.',
+    priority: 'High priority = due a better room. It goes up when a person gets a worse bed than the average of their group (couples or singles), and down when they get a better one. 0 = fair share so far.',
     floor: 'Floor nights so far this season: couch, air mattress, or no bed.',
-    rotation: 'Correlation between luck before the weekend and bed quality, singles only. Negative = the unlucky got the better beds.',
-    stdev: 'How far luck per night spreads around zero across people. Lower = more even.',
-    range: 'Luck per night of the luckiest person minus the unluckiest (people with 4 or more nights).',
-    flex: 'Luck gap between singles with flexible schedules and other singles. Near 0 = no sign-up advantage.',
+    rotation: 'Correlation between priority before the weekend and bed quality, singles only. Positive = the people who were due got the better beds.',
+    stdev: 'How far priority per night spreads around 0 across people. Lower = more even.',
+    range: 'Highest minus lowest priority per night (people with 4 or more nights).',
+    flex: 'How much better the beds of singles with flexible schedules were than other singles, per night. Near 0 = no sign-up advantage.',
     meanCouple: 'Average bed quality per night for couple members.',
     meanSingle: 'Average bed quality per night for singles.',
     maxFloor: 'Most floor nights for any one person in the season.',
@@ -244,16 +243,16 @@
   function renderRegistrations() {
     const { balances, floorNights } = currentState();
     document.getElementById('weekend-sub').textContent =
-      weekend.mode === 'fresh' ? `${weekendLabel()} · everyone starts even` : `${weekendLabel()} · luck from ${S.MID_SEASON_WEEKENDS} simulated weekends`;
+      weekend.mode === 'fresh' ? `${weekendLabel()} · everyone starts even` : `${weekendLabel()} · priority from ${S.MID_SEASON_WEEKENDS} simulated weekends`;
 
-    let html = `<thead><tr><th>Person</th>${M.NIGHTS.map((n) => `<th class="c">${n}</th>`).join('')}<th class="num"><span data-tip="${esc(TIPS.luck)}">Luck ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.floor)}">Floor ⓘ</span></th></tr></thead><tbody>`;
+    let html = `<thead><tr><th>Person</th>${M.NIGHTS.map((n) => `<th class="c">${n}</th>`).join('')}<th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.floor)}">Floor ⓘ</span></th></tr></thead><tbody>`;
     for (const p of config.people) {
       const reg = weekend.registrations[p.id] || [];
       html += `<tr><td><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
       for (let n = 0; n < 3; n++) {
         html += `<td class="c"><input type="checkbox" data-person="${esc(p.id)}" data-night="${n}" ${reg.includes(n) ? 'checked' : ''} aria-label="${esc(p.name)} ${NIGHT_NAMES[n]}"></td>`;
       }
-      html += `<td class="num">${fmt(balances[p.id] || 0)}</td><td class="num">${floorNights[p.id] || 0}</td></tr>`;
+      html += `<td class="num">${fmt(-(balances[p.id] || 0))}</td><td class="num">${floorNights[p.id] || 0}</td></tr>`;
     }
     html += '</tbody>';
     const table = document.getElementById('reg-table');
@@ -402,8 +401,8 @@
   }
 
   /*
-   * Correlation between the balance before the weekend and the bed value of the weekend.
-   * A negative number shows that people with low balances got better beds, so the method rotates.
+   * Correlation between the priority before the weekend and the bed value of the weekend.
+   * Priority is the negative balance. A positive number shows that people with high priority got better beds.
    */
   function balanceCorrelation(run, balances) {
     const bedById = new Map(M.flattenBeds(config.rooms).map((b) => [b.id, b]));
@@ -413,7 +412,7 @@
       if (party.members.length !== 1) continue;
       const m = party.members[0];
       const bedId = run.result.assignment[m];
-      xs.push(balances[m] || 0);
+      xs.push(-(balances[m] || 0));
       ys.push(bedId === M.OVERFLOW ? 0 : bedById.get(bedId).value);
     }
     const n = xs.length;
@@ -440,7 +439,7 @@
     const f = last.firstCome;
     const view = last[weekend.view];
     const attending = o.result.parties.flatMap((p) => p.members);
-    const fairRows = [['Rotation (r)', balanceCorrelation(o, last.state.balances), balanceCorrelation(f, last.state.balances), 'r', true, 2, true, TIPS.rotation]];
+    const fairRows = [['Rotation (r)', balanceCorrelation(o, last.state.balances), balanceCorrelation(f, last.state.balances), 'r', false, 2, true, TIPS.rotation]];
     const free = view.result.freeBeds.map((list) => list.length);
     const nightButtons = M.NIGHTS.map((x, i) => [i, `${x} <span class="free-n">${free[i]} free</span>`]);
 
@@ -453,14 +452,14 @@
       </div></div></div>`;
 
     const order = [...attending].sort((a, b) => (last.state.balances[a] || 0) - (last.state.balances[b] || 0));
-    html += `<div class="card"><h3>Who got what, lowest luck first</h3><div class="scroll"><table class="tight"><thead><tr><th>#</th><th>Person</th><th class="num"><span data-tip="${esc(TIPS.luck)}">Luck ⓘ</span></th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th>Nights</th><th><span class="key opt"></span>Optimizer</th><th class="num">Luck after</th><th><span class="key fc"></span>First come</th></tr></thead><tbody>`;
+    html += `<div class="card"><h3>Who got what, highest priority first</h3><div class="scroll"><table class="tight"><thead><tr><th>#</th><th>Person</th><th class="num"><span data-tip="${esc(TIPS.priority)}">Priority ⓘ</span></th><th>Nights</th><th><span class="key opt"></span>Optimizer</th><th class="num">Priority after</th><th><span class="key fc"></span>First come</th></tr></thead><tbody>`;
     order.forEach((id, i) => {
       const party = o.result.parties.find((p) => p.members.includes(id));
       const bedName = (run) => {
         const bedId = run.result.assignment[id];
         return bedId === M.OVERFLOW ? 'No bed' : beds.get(bedId).name;
       };
-      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(last.state.balances[id] || 0)}</td><td class="num">×${plain(o.result.weights[id], 1)}</td><td class="mono">${party.memberNights[id].map((n) => M.NIGHTS[n]).join(' ')}</td><td>${esc(bedName(o))}</td><td class="num">${fmt(o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td></tr>`;
+      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(-(last.state.balances[id] || 0))}</td><td class="mono">${party.memberNights[id].map((n) => M.NIGHTS[n]).join(' ')}</td><td>${esc(bedName(o))}</td><td class="num">${fmt(-o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td></tr>`;
     });
     html += '</tbody></table></div></div>';
     out.innerHTML = html;
@@ -504,8 +503,8 @@
 
     const rows = [
       ['Fairness'],
-      ['Luck spread (σ)', o.stdev, f.stdev, 'per night', true, 2, false, TIPS.stdev],
-      ['Luck range', o.spread, f.spread, 'per night', true, 2, false, TIPS.range],
+      ['Priority spread (σ)', o.stdev, f.stdev, 'per night', true, 2, false, TIPS.stdev],
+      ['Priority range', o.spread, f.spread, 'per night', true, 2, false, TIPS.range],
       ['Flexible-schedule edge', gap(o, 'flexibleSinglesAvg', 'otherSinglesAvg'), gap(f, 'flexibleSinglesAvg', 'otherSinglesAvg'), 'per night', 'abs', 2, true, TIPS.flex],
       ['Bed quality, couples', meanValue(o, (p) => !!p.partnerId), meanValue(f, (p) => !!p.partnerId), 'per night', null, 1, false, TIPS.meanCouple],
       ['Bed quality, singles', meanValue(o, (p) => !p.partnerId), meanValue(f, (p) => !p.partnerId), 'per night', null, 1, false, TIPS.meanSingle],
@@ -530,11 +529,11 @@
 
     let html = `<div class="card"><div class="cols"><div><h2>Metrics</h2>${compareTable(rows)}<p class="sub mono">bold = better · hover ⓘ for definitions</p></div><div><h2>Room Utilization by Night</h2>${util}</div></div></div>`;
 
-    html += `<div class="card"><h2>Luck by Person and Weekend <span class="i" data-tip="${esc(TIPS.luck)}">ⓘ</span></h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· near 0 = fair share · hover a line for the name</span></div>
+    html += `<div class="card"><h2>Priority by Person and Weekend <span class="i" data-tip="${esc(TIPS.priority)}">ⓘ</span></h2><div class="legend small"><span class="key couple"></span>couple member<span class="key single"></span>single<span class="muted mono">· above 0 = due a better room · hover a line for the name</span></div>
       <div class="two"><div><h3>Optimizer</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-o"></canvas></div></div>
       <div><h3>First come</h3><div class="chart-box" style="height:220px"><canvas id="ch-bal-f"></canvas></div></div></div></div>`;
 
-    html += `<div class="card"><div class="two"><div><h2>Luck per Night by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· (F) flexible schedule · nights stayed</span></div>
+    html += `<div class="card"><div class="two"><div><h2>Priority per Night by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· (F) flexible schedule · nights stayed</span></div>
       <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-adv"></canvas></div></div>
       <div><h2>Floor Nights by Person</h2><div class="legend small"><span class="key opt"></span>Optimizer<span class="key fc"></span>First come<span class="muted mono">· couch, air mattress, no bed</span></div>
       <div class="chart-box" style="height:${config.people.length * 24 + 50}px"><canvas id="ch-floor"></canvas></div></div></div></div>`;
@@ -562,7 +561,7 @@
     const beds = bedInfo();
     let html = '<table class="heat"><thead><tr><th style="text-align:left">Person</th>';
     for (const w of season.weekends) html += `<th>${esc(w.label)}</th>`;
-    html += `<th class="num"><span data-tip="Luck per night over the season">Luck ⓘ</span></th></tr></thead><tbody>`;
+    html += `<th class="num"><span data-tip="Priority per night at the end of the season. Above 0 = due a better room.">Priority ⓘ</span></th></tr></thead><tbody>`;
     for (const p of config.people) {
       html += `<tr><td class="name"><span class="dot ${p.partnerId ? 'couple' : 'single'}"></span>${esc(p.name)}</td>`;
       run.weeks.forEach((week) => {
@@ -579,7 +578,7 @@
         const title = `${p.name}: ${bedId === M.OVERFLOW ? 'no bed' : beds.get(bedId).name}, ${nightsText(party.memberNights[p.id])}`;
         html += `<td class="cell" style="background:${RAMP[idx]};color:${ink}" title="${esc(title)}">${value}</td>`;
       });
-      html += `<td class="num">${fmt(run.metrics.perPerson[p.id].advantage, 2)}</td></tr>`;
+      html += `<td class="num">${fmt(-run.metrics.perPerson[p.id].advantage, 2)}</td></tr>`;
     }
     html += '</tbody></table>';
     document.getElementById('grid').innerHTML = html;
@@ -631,7 +630,8 @@
     let hi = 0;
     for (const [m] of METHODS) {
       for (const p of config.people) {
-        for (const v of season[m].metrics.perPerson[p.id].balanceHistory) {
+        for (const b of season[m].metrics.perPerson[p.id].balanceHistory) {
+          const v = -b;
           lo = Math.min(lo, v);
           hi = Math.max(hi, v);
         }
@@ -645,7 +645,7 @@
           labels,
           datasets: config.people.map((p) => ({
             label: p.name,
-            data: season[method].metrics.perPerson[p.id].balanceHistory.map((v) => Math.round(v * 10) / 10),
+            data: season[method].metrics.perPerson[p.id].balanceHistory.map((v) => Math.round(-v * 10) / 10),
             borderColor: p.partnerId ? cCouple : cSingle,
             backgroundColor: p.partnerId ? cCouple : cSingle,
             borderWidth: 1.5,
@@ -660,7 +660,7 @@
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmt(c.parsed.y)}` } } },
           scales: {
             x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, title: axisTitle('Weekend (Thursday date)', text2) },
-            y: { min: Math.floor(lo - pad), max: Math.ceil(hi + pad), grid: { color: grid }, title: axisTitle('Luck (points)', text2) },
+            y: { min: Math.floor(lo - pad), max: Math.ceil(hi + pad), grid: { color: grid }, title: axisTitle('Priority (points)', text2) },
           },
         },
       });
@@ -668,11 +668,11 @@
     charts.balF = balanceChart('ch-bal-f', 'firstCome');
 
     const names = config.people.map((p) => `${p.name}${p.flexible ? ' (F)' : ''} · ${season.optimizer.metrics.perPerson[p.id].nights}`);
-    const hbar = (canvasId, key, digits, xTitle) => {
+    const hbar = (canvasId, key, digits, xTitle, sign = 1) => {
       const get = (m) =>
         config.people.map((p) => {
           const v = season[m].metrics.perPerson[p.id][key];
-          return v === null ? null : Math.round(v * 10 ** digits) / 10 ** digits;
+          return v === null ? null : Math.round(sign * v * 10 ** digits) / 10 ** digits;
         });
       const ds = (label, data, color) => ({ label, data, backgroundColor: color, borderRadius: 3, borderSkipped: false, barPercentage: 0.9, categoryPercentage: 0.8 });
       return new Chart(document.getElementById(canvasId), {
@@ -692,7 +692,7 @@
         plugins: [barValues],
       });
     };
-    charts.adv = hbar('ch-adv', 'advantage', 2, 'Luck per night (points)');
+    charts.adv = hbar('ch-adv', 'advantage', 2, 'Priority per night (points)', -1);
     charts.floor = hbar('ch-floor', 'floorNights', 0, 'Floor nights (count)');
   }
 
@@ -700,7 +700,7 @@
 
   /* Each setting has named levels. A level maps to one number in the configuration. */
   const SETTING_LEVELS = [
-    ['strength', 'Rotation', 'How hard the optimizer gives the good beds to people with low luck. Off = only bed quality counts. Max = luck almost decides alone.', [['Off', 0], ['Gentle', 1], ['Strong', 2], ['Max', 3.5]]],
+    ['strength', 'Rotation', 'How hard the optimizer gives the good beds to people with high priority. Off = priority is ignored. Max = priority almost decides alone.', [['Off', 0], ['Gentle', 1], ['Strong', 2], ['Max', 3.5]]],
     ['noise', 'Randomness', 'A small random tie-breaker. It makes equal choices come out differently each week, so the plan is not the same every time.', [['None', 0], ['Low', 0.75], ['Med', 1.5], ['High', 3]]],
     ['genderPenalty', 'Same-gender rooms', 'How much the optimizer avoids shared rooms with singles of different genders. Strong can send someone to the couch to avoid a mixed room.', [['Ignore', 0], ['Prefer', 3], ['Strong', 8]]],
   ];
@@ -900,7 +900,7 @@ gM, gF, z[r,n] ∈ {0,1}   room r, night n: male / female single / both</pre>
              − 300·capExcess − 10000·nobed )
     − G·Σ z[r,n]
 
-w_m = clamp(exp(−s·luck_m / 6), 1/50, 50)     (priority)
+w_m = clamp(exp(s·priority_m / 6), 1/50, 50)
 ε_o ~ U(0, ε max)</pre>
 </div><div>
 <h3>Constraints</h3>
@@ -908,17 +908,18 @@ w_m = clamp(exp(−s·luck_m / 6), 1/50, 50)     (priority)
 Σ { y[p,o] : b ∈ o, n ∈ nights(p) } ≤ 1  ∀ b, n
 y[p,o] ≤ gM[r,n]  (male single in r, n); same for gF
 gM + gF − z ≤ 1                        ∀ bedroom r, n</pre>
-<h3>Luck</h3>
+<h3>Priority</h3>
 <pre class="model mono">pool = couple | single  (per weekend)
-luck_m += v_m,n − mean_pool,n(v)    ∀ nights of m
-Σ_pool Δluck = 0  per night</pre>
+priority_m += mean_pool,n(v) − v_m,n    ∀ nights of m
+Σ_pool Δpriority = 0  per night
+high priority = due a better room</pre>
 <h3>Measures</h3>
 <pre class="model mono">Utilization      sleepers / spaces (queen = 2), bedrooms
 Single in queen  queen-night, 1 sleeper
 Wasted queen     single in Q ∧ couple in 2 beds ∧ someone on floor
 Held-empty queen queen held for an absent partner
 Avoidable floor  floor while a better option was free (gender-safe)
-Priority inv.    same gender + nights, Δluck > 1, luckier has better bed
+Priority inv.    same gender + nights, Δpriority > 1, lower priority has better bed
 Mixed room       bedroom-night, singles of 2 genders
 Couple split     couple in 2 beds outside 1 twin room</pre>
 <h3>First come</h3>

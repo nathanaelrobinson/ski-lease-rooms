@@ -22,7 +22,7 @@ The demo is a static web page on GitHub Pages. It simulates a season and a singl
 
 ## Fairness
 
-Each person has a running balance. The page calls the balance "Luck". People who sleep as a couple and people who sleep as a single on a weekend are in two separate pools. For each night, the tool computes the average bed value of each pool. Each person's balance then increases by the value of their bed minus the average of their pool. A partner who comes alone is in the single pool for that weekend. A no-bed night has a value of 0. The balances in each pool on each night add up to zero.
+Each person has a running balance. The page shows the negative balance as "Priority": a high priority means the person is due a better room. People who sleep as a couple and people who sleep as a single on a weekend are in two separate pools. For each night, the tool computes the average bed value of each pool. Each person's balance then increases by the value of their bed minus the average of their pool. A partner who comes alone is in the single pool for that weekend. A no-bed night has a value of 0. The balances in each pool on each night add up to zero.
 
 Decision on 2026-10-19: couples get the queens first. With one shared pool, couples always drift up and singles drift down. Then the absolute weights saturate and rotation inside each group stops. Two pools keep the rotation inside each group. Singles get the queens that couples do not need.
 
