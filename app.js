@@ -167,8 +167,12 @@
     return byId;
   }
 
+  /* Write the nights as day names, for example "Fri–Sat" or "Sat". */
   function nightsText(nights) {
-    return nights.map((n) => M.NIGHTS[n][0]).join('');
+    const sorted = [...nights].sort();
+    const run = sorted.every((n, i) => i === 0 || n === sorted[i - 1] + 1);
+    if (sorted.length > 1 && run) return `${M.NIGHTS[sorted[0]]}–${M.NIGHTS[sorted[sorted.length - 1]]}`;
+    return sorted.map((n) => M.NIGHTS[n]).join(', ');
   }
 
   function uid(prefix) {
@@ -459,7 +463,7 @@
         const bedId = run.result.assignment[id];
         return bedId === M.OVERFLOW ? 'No bed' : beds.get(bedId).name;
       };
-      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(-(last.state.balances[id] || 0))}</td><td class="mono">${party.memberNights[id].map((n) => M.NIGHTS[n]).join(' ')}</td><td>${esc(bedName(o))}</td><td class="num">${fmt(-o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td></tr>`;
+      html += `<tr><td class="muted">${i + 1}</td><td><span class="dot ${party.members.length === 2 ? 'couple' : 'single'}"></span>${esc(personName(id))}</td><td class="num">${fmt(-(last.state.balances[id] || 0))}</td><td class="mono">${nightsText(party.memberNights[id])}</td><td>${esc(bedName(o))}</td><td class="num">${fmt(-o.update.balances[id])}</td><td class="muted">${esc(bedName(f))}</td></tr>`;
     });
     html += '</tbody></table></div></div>';
     out.innerHTML = html;
