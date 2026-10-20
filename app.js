@@ -595,7 +595,7 @@
     const h = document.getElementById('season-head');
     const isHist = seasonSource === 'history' && history;
     const title = isHist ? `Replay of ${history.season} · ${history.weekends.length} weekends` : 'Season · 7 Jan – 2 May 2027';
-    const sub = isHist ? 'actual attendance and guests from the sign-up sheet · optimizer vs what actually happened' : '17 weekends · same attendance for both methods';
+    const sub = isHist ? `actual attendance and guests from the sign-up sheet · optimizer vs what actually happened${history.note ? ` · ${history.note}` : ''}` : '17 weekends · same attendance for both methods';
     h.innerHTML = `<h2>${esc(title)}</h2><span class="mono muted">${esc(sub)}</span>`;
     const opts = [['sim', 'Simulated']];
     if (history) opts.push(['history', `${history.season} actual`]);
