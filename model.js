@@ -106,10 +106,11 @@
    * The nights of guest k. guests[host].nights (optional) lists the nights of each guest, for example
    * from a past sign-up sheet. Without it, a guest stays for all the nights of the host.
    */
-  function guestNights(g, k, hostNights) {
+  function guestNights(g, k, hostNights, shared = false) {
     const list = g.nights && g.nights[k - 1];
     if (!list || list.length === 0) return hostNights;
-    return hostNights.filter((n) => list.includes(n));
+    /* A guest who shares the host bed can only stay on the host's nights. Other guests keep their own nights. */
+    return shared ? hostNights.filter((n) => list.includes(n)) : [...list].sort();
   }
 
   /*
@@ -153,7 +154,7 @@
           host: person.id,
           advance: !!g.advance,
           nights: sorted,
-          memberNights: { [person.id]: sorted, [gid]: guestNights(g, 1, sorted) },
+          memberNights: { [person.id]: sorted, [gid]: guestNights(g, 1, sorted, true) },
         });
       } else {
         members.push({ id: `s_${person.id}`, kind: 'single', members: [person.id], nights: sorted, memberNights: { [person.id]: sorted } });
@@ -161,11 +162,11 @@
     }
     /* Guests who do not share the host bed. A partner guest who shares is guest 1, so the others start at 2. */
     for (const [hostId, g] of Object.entries(guests)) {
-      const nights = registrations[hostId];
-      if (!nights || nights.length === 0) continue;
+      const nights = registrations[hostId] || [];
       const hostParty = members.find((p) => p.members.includes(hostId));
-      if (!hostParty) continue;
-      const first = g.type === 'partner' && hostParty.kind === 'hostPartner' ? 2 : 1;
+      /* A guest can come without the host only if the guest has their own nights. */
+      if (!hostParty && !g.nights) continue;
+      const first = hostParty && g.type === 'partner' && hostParty.kind === 'hostPartner' ? 2 : 1;
       const sorted = [...nights].sort();
       for (let k = first; k <= (g.count || 1); k++) {
         const gid = guestId(hostId, k);
