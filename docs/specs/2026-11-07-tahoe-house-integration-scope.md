@@ -1,6 +1,6 @@
 # Room assignment in tahoe-house: integration spec
 
-Date: 2026-11-07. Status: ready to build, after Theo answers the open questions at the end.
+Date: 2026-11-07. Status: tahoe-house PR 1 (shadow mode) is on the branch `room-assignment-shadow`. Live mode is next.
 
 Decisions from Nate on 2026-11-07:
 
@@ -26,7 +26,7 @@ The work is behind a new season feature flag, `features.roomAssignment`, with th
 - `lib/booking.ts` (`claimBed`) is the single write path. It examines the season dates, the release window, the membership, and the house of the bed. It also applies the rule of one bed for each person on each night.
 - `ReleaseRule` rows make `ReleaseWindow` rows (`lib/release-sync.ts`, cron `/api/cron/release-windows`). A window has an audience (`MEMBER` or `GUEST`), an open time, and a covered date range.
 - A `Bed` has a `label`, a `BedType`, a `sleeps` number, `isActive`, and `isOverflow`. The types are `QUEEN`, `KING`, `FULL`, `TWIN`, `BUNK_TOP`, `BUNK_BOTTOM`, `COUCH`, and `FLOOR`. Overflow beds are hidden from the member sheet. Admins edit beds in Admin → House (`components/admin/RoomEditor.tsx`).
-- `ShareType.nightAllowance` holds the nights that a share includes. `claimBed` declares an `ALLOWANCE_EXCEEDED` code, but no code path returns it, so the app does not enforce the allowance now.
+- `ShareType.nightAllowance` holds the nights that a share includes. The app does not enforce it. The integration test "legacy allowances do not limit nights" makes sure of that, so registration does not enforce it either.
 - Tests use vitest (`npm test`). CI also runs integration tests against PostgreSQL 18 (`.github/workflows/ci.yml`).
 
 ## Flow with the flag on
@@ -162,7 +162,7 @@ The priority balances for a run come from `balancesAfter` of the last `APPLIED` 
 ### Server and deployment
 
 1. A change to `claimBed`. If the flag is `on`, a member claim on a night in a member window fails. It fails until a run for that window is `APPLIED`. Use the new code `ASSIGNMENT_PENDING`. Admin claims (`bypassRelease`) keep working.
-2. Registration actions (`app/actions/registrations.ts`). Register, change, and cancel nights while the window is open. Reject a member who is not `ACTIVE`. Reject a registration over `ShareType.nightAllowance`: count the stays of the season and the active registrations.
+2. Registration actions (`app/actions/registrations.ts`). Register, change, and cancel nights until the lock. Reject a member who is not `ACTIVE`, and a night outside the window.
 3. The run (`lib/room-assignment/run.ts`). Read all inputs in one transaction, solve, and store an `AssignmentRun`. In `on` mode, write all stays in one serializable transaction through `runClaimBed` with `bypassRelease`. Set `releaseWindowId` and `assignmentRunId` on each stay. Set `outcome` and `stayId` on each registration. If a bed became taken after the read, stop and mark the run `FAILED`. The run never overwrites a stay.
 4. Undo. An admin action cancels the stays of one run (the same `activeKey` null pattern as `cancelStay`) and sets the run to `UNDONE`. The admin can then run the solver again.
 5. Cron route `/api/cron/assign-rooms` and a new entry in `vercel.json`. The route finds member windows whose lock time passed and that have no run, then runs the solver. It is idempotent: a second call finds the run and does nothing. Set `maxDuration` to 60 seconds. Vercel Hobby plans run cron one time a day at an imprecise time. On Hobby, the admin "Run now" button is the main trigger.
@@ -233,7 +233,7 @@ All tahoe-house work goes on a feature branch with a PR to `main`. Nobody pushes
 ## Testing
 
 - Model unit tests (this repo, `npm test`). The existing rules: no bed holds two parties on a night, a person keeps one bed for a stay, couples stay together, and balances add up to zero. New cases for nights: a four-night run (Thursday to Sunday), a one-night run, a run that starts on a Monday, and a run with a gap. Other new cases: a member with a gap between two nights, taken beds, and a couch that sleeps 2.
-- Adapter unit tests (tahoe-house, vitest, no database). Build solver input from fixture rows that copy the Prisma shapes. Cases: one partner clears `bookTogether` (two singles), and a couple on a `FLOOR` bed that sleeps 2. A full house sends a member to an overflow bed. A member already has a stay. A registration goes over the night allowance.
+- Adapter unit tests (tahoe-house, vitest, no database). Build solver input from fixture rows that copy the Prisma shapes. Cases: one partner clears `bookTogether` (two singles), and a couple on a `FLOOR` bed that sleeps 2. A full house sends a member to an overflow bed. A member already has a stay. 
 - Integration tests (tahoe-house, PostgreSQL, the existing CI job). Seed a season, register members, run the assignment, and examine the `Stay` and `NightRegistration` rows. Run the cron two times, and make sure that the second call changes nothing. Put a stay in a bed between the read and the write, and make sure that the run fails and overwrites nothing. Undo a run, and make sure that the beds are free.
 - Replay. The 2025 and 2026 history files in `private/` hold real attendance and beds. A local script loads them into a disposable database and runs the shadow comparison. Keep the script out of Git, because the files hold real names.
 - Live shadow test. Set the flag to `shadow` for two or three weekends. The house signs up as now, and the admin page shows the optimizer plan for the same weekends. Set the flag to `on` only after the house agrees with the comparison.
@@ -244,4 +244,4 @@ All tahoe-house work goes on a feature branch with a PR to `main`. Nobody pushes
 - Which Vercel plan does the project use? The answer sets the cron precision.
 - What is the lock time: a fixed number of hours after the window opens, or only the admin button?
 - Copy `model.js`, or port it to TypeScript?
-- Is the night allowance meant to be enforced? No code path enforces it now.
+- The migrations and `schema.prisma` do not agree now: `prisma migrate diff` wants to drop `StockLog` and five `StockItem` columns. The room assignment migration leaves them out. Which side is correct?
