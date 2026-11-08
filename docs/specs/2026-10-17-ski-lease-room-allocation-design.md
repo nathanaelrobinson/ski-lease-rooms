@@ -132,3 +132,12 @@ History replay:
 - Trouble for guests (stage S3m): after S3, a guest has no bed while a bed is free on a night of the stay. A guest can have a bed for part of the stay.
 - A split stay gets the full queen bonus only if every part is in a queen or king. A pair gets 40 points for each queen night in a split stay, enough to pay for one move.
 - Measure: Room moves (a member in a different bed on a later night of the same stay). The 2025 actual season had 7.
+
+## Any nights, bed attributes, and taken beds (added 2026-11-07)
+
+- `input.nights` is a sorted list of date keys. A run has from 1 to 31 nights, on any days of the week. Without `input.nights`, a run has the three demo nights.
+- With `input.nights`, a stay is a run of consecutive dates. A member who skips a night, or a missing date in the list, gives two stays. Each stay keeps one bed.
+- A bed can give three attributes: `shared` (a couple can share it), `queen` (couple queen bonus), and `floor` (couch cap and floor penalty). A bed with no attributes takes them from its type.
+- `input.taken[n]` lists the beds that hold a stay on night n before the run. The run does not use them.
+- The demo season gives the same result as before these changes.
+- The plan for tahoe-house is in `2026-11-07-tahoe-house-integration-scope.md`.

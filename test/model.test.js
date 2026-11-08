@@ -219,3 +219,86 @@ test('nobody moves on a weekend without trouble', () => {
   assert.ok(!r.stages.includes('S1m'));
   assert.ok(r.parties.every((p) => !p.moved));
 });
+
+/* Tests for runs with any set of nights, bed attributes, and taken beds. */
+
+/* Make sure that no bed holds two parties on a night, for a run of any length. */
+function assertNoDoubleBeds(result) {
+  result.plan.forEach((cell, n) => {
+    const seen = new Set();
+    result.parties.forEach((party, pi) => {
+      if (!party.nights.includes(n)) return;
+      for (const b of result.choices[pi].beds) {
+        assert.ok(!seen.has(b), `bed ${b} holds two parties on night ${n}`);
+        seen.add(b);
+      }
+    });
+  });
+}
+
+const THU_SUN = ['2027-01-07', '2027-01-08', '2027-01-09', '2027-01-10'];
+
+test('a four-night run from Thursday to Sunday uses all four nights', () => {
+  const result = Model.solveWeekend(highs, { ...config, nights: THU_SUN, registrations: everyone([0, 1, 2, 3]), rng: Sim.rngFromSeed(20) });
+  assert.strictEqual(result.status, 'Optimal');
+  assert.strictEqual(result.plan.length, 4);
+  assert.deepStrictEqual(result.nights, THU_SUN);
+  assertNoDoubleBeds(result);
+  assert.ok(Object.keys(result.plan[3]).length > 0, 'Sunday has no sleepers');
+  const { balances } = Model.updateBalances({}, result, config.rooms);
+  const total = Object.values(balances).reduce((s, v) => s + v, 0);
+  assert.ok(Math.abs(total) < 1e-9, `total is ${total}`);
+});
+
+test('a one-night run that starts on a Monday', () => {
+  const result = Model.solveWeekend(highs, { ...config, nights: ['2027-02-15'], registrations: { ivan: [0], kai: [0] }, rng: Sim.rngFromSeed(21) });
+  assert.strictEqual(result.plan.length, 1);
+  assert.strictEqual(result.freeBeds.length, 1);
+  assert.ok(result.assignment.ivan && result.assignment.kai);
+  assert.notStrictEqual(result.assignment.ivan, result.assignment.kai);
+});
+
+test('date breaks find a date that is not in the run', () => {
+  assert.deepStrictEqual([...Model.dateBreaks(['2027-01-07', '2027-01-08', '2027-01-10'])], [2]);
+  assert.deepStrictEqual([...Model.dateBreaks(THU_SUN)], []);
+  assert.deepStrictEqual(Model.nightRuns([0, 1, 3], new Set()), [[0, 1], [3]]);
+  assert.deepStrictEqual(Model.nightRuns([0, 1, 2], new Set([2])), [[0, 1], [2]]);
+});
+
+test('a member with a gap between nights gets two stays', () => {
+  const result = Model.solveWeekend(highs, { ...config, nights: THU_SUN, registrations: { ivan: [0, 2] }, rng: Sim.rngFromSeed(22) });
+  const parts = result.parties.filter((p) => p.members.includes('ivan'));
+  assert.deepStrictEqual(parts.map((p) => p.nights), [[0], [2]]);
+  assert.ok(result.plan[0][Object.keys(result.plan[0])[0]].sleepers.includes('ivan'));
+  assert.deepStrictEqual(Object.keys(result.plan[1]), []);
+});
+
+test('a run with a missing date splits a stay across the gap', () => {
+  const nights = ['2027-01-08', '2027-01-09', '2027-01-11'];
+  const result = Model.solveWeekend(highs, { ...config, nights, registrations: { ivan: [0, 1, 2] }, rng: Sim.rngFromSeed(23) });
+  const parts = result.parties.filter((p) => p.members.includes('ivan'));
+  assert.deepStrictEqual(parts.map((p) => p.nights), [[0, 1], [2]]);
+  assertNoDoubleBeds(result);
+});
+
+test('the run does not use a bed that is already taken on a night', () => {
+  const taken = [['primary-q'], ['primary-q', 'lake-q'], [], []];
+  const result = Model.solveWeekend(highs, {
+    ...config, nights: THU_SUN, taken, registrations: { alex: [0, 1], blair: [0, 1], ivan: [1, 2] }, rng: Sim.rngFromSeed(24),
+  });
+  for (const [n, list] of taken.entries()) for (const b of list) assert.ok(!result.plan[n][b], `${b} is in use on night ${n}`);
+  assertNoDoubleBeds(result);
+});
+
+test('a couch with the shared attribute can hold a couple, and a floor attribute counts toward the cap', () => {
+  const rooms = [{ id: 'den', name: 'Den', beds: [
+    { id: 'futon', type: 'couch', value: 2, shared: true, floor: true },
+    { id: 'cot', type: 'twin', value: 3, floor: true },
+  ] }];
+  const result = Model.solveWeekend(highs, { rooms, people: config.people, nights: ['2027-01-09'], registrations: { alex: [0], blair: [0], ivan: [0] }, rng: Sim.rngFromSeed(25) });
+  assert.strictEqual(result.assignment.alex, 'futon');
+  assert.strictEqual(result.assignment.blair, 'futon');
+  assert.strictEqual(result.assignment.ivan, 'cot');
+  const bedById = new Map(Model.flattenBeds(rooms).map((b) => [b.id, b]));
+  assert.ok(Model.isFloor('cot', bedById));
+});

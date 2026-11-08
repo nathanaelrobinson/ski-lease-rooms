@@ -67,15 +67,80 @@
     leadWeeks: 4,
   };
 
-  /* Make one flat list of beds. Each bed keeps the data of its room. */
+  /*
+   * Make one flat list of beds. Each bed keeps the data of its room.
+   * A bed has three attributes: shared (a couple can share it), queen (it gets the couple queen bonus),
+   * and floor (it counts toward the couch cap). The caller can give each attribute. If not, the type gives it.
+   */
   function flattenBeds(rooms) {
     const beds = [];
     for (const room of rooms) {
       for (const bed of room.beds) {
-        beds.push({ id: bed.id, type: bed.type, value: Number(bed.value), roomId: room.id, roomName: room.name, common: !!room.common });
+        beds.push({
+          id: bed.id,
+          type: bed.type,
+          value: Number(bed.value),
+          shared: bed.shared === undefined ? SHARED_TYPES.has(bed.type) : !!bed.shared,
+          queen: bed.queen === undefined ? QUEEN_TYPES.has(bed.type) : !!bed.queen,
+          floor: bed.floor === undefined ? FLOOR_TYPES.has(bed.type) : !!bed.floor,
+          roomId: room.id,
+          roomName: room.name,
+          common: !!room.common,
+        });
       }
     }
     return beds;
+  }
+
+  /*
+   * The number of nights of a run. input.nights is a sorted list of date keys ('2027-01-07').
+   * Without input.nights, the run has the three demo nights.
+   */
+  function nightCountOf(input) {
+    return input && Array.isArray(input.nights) ? input.nights.length : NIGHTS.length;
+  }
+
+  /*
+   * The indexes where a new stay starts because the date before is not in the run.
+   * Example: nights ['2027-01-07', '2027-01-09'] give the set {1}. Without date keys, the set is empty.
+   */
+  function dateBreaks(nights) {
+    const breaks = new Set();
+    if (!Array.isArray(nights)) return breaks;
+    for (let n = 1; n < nights.length; n++) {
+      const prev = Date.parse(`${nights[n - 1]}T00:00:00Z`);
+      const cur = Date.parse(`${nights[n]}T00:00:00Z`);
+      if (cur - prev !== 86400000) breaks.add(n);
+    }
+    return breaks;
+  }
+
+  /* Split sorted night indexes into runs of consecutive nights. A date break also starts a new run. */
+  function nightRuns(nights, breaks) {
+    const runs = [];
+    for (const n of nights) {
+      const run = runs[runs.length - 1];
+      if (run && n === run[run.length - 1] + 1 && !breaks.has(n)) run.push(n);
+      else runs.push([n]);
+    }
+    return runs;
+  }
+
+  /*
+   * Split each member party into one party for each run of consecutive nights.
+   * Each part keeps one bed, and two parts can have different beds. Guest parties do not change.
+   */
+  function splitStays(parties, breaks) {
+    const out = [];
+    for (const party of parties) {
+      const runs = nightRuns(party.nights, breaks);
+      if (runs.length < 2) {
+        out.push(party);
+        continue;
+      }
+      runs.forEach((run, k) => out.push({ ...subParty(party, run), id: `${party.id}@${k + 1}` }));
+    }
+    return out;
   }
 
   /* Guest k of a host has the id g:host (k = 1) or g:host#k. */
@@ -201,7 +266,7 @@
     } else {
       const [a, b] = party.members;
       for (const bed of beds) {
-        if (SHARED_TYPES.has(bed.type)) options.push({ beds: [bed.id], assign: { [a]: bed.id, [b]: bed.id }, queen: QUEEN_TYPES.has(bed.type), shared: true });
+        if (bed.shared) options.push({ beds: [bed.id], assign: { [a]: bed.id, [b]: bed.id }, queen: bed.queen, shared: true });
       }
       const twinsByRoom = new Map();
       for (const bed of beds) {
@@ -282,7 +347,7 @@
 
   /* Return true if a bed id is a floor bed or no bed. */
   function isFloor(bedId, bedById) {
-    return bedId === OVERFLOW || FLOOR_TYPES.has(bedById.get(bedId).type);
+    return bedId === OVERFLOW || bedById.get(bedId).floor;
   }
 
   /* Count the floor nights of an option that go above the couch cap. A cap of null turns the cap off. */
@@ -423,7 +488,7 @@
 
     /* On each night, each bed holds at most one party. */
     for (const bed of beds) {
-      for (let n = 0; n < NIGHTS.length; n++) {
+      for (let n = 0; n < ctx.nightCount; n++) {
         const t = vars.filter((v) => bedsOn(parties[v.partyIndex], v.option, n).includes(bed.id)).map((v) => term(1, v.name));
         if (t.length > 1) rows.push(`${tag}b${rows.length}:\n${lines(t)} <= 1`);
       }
@@ -439,7 +504,7 @@
       }
       for (const [, bedIds] of roomBeds) {
         if (bedIds.length < 2) continue;
-        for (let n = 0; n < NIGHTS.length; n++) {
+        for (let n = 0; n < ctx.nightCount; n++) {
           const byGender = { M: [], F: [] };
           for (const v of vars) {
             const party = parties[v.partyIndex];
@@ -514,10 +579,17 @@
     const bedById = new Map(beds.map((b) => [b.id, b]));
     const people = withGuests(input.people, guests);
     const personById = new Map(people.map((p) => [p.id, p]));
-    const { members, guests: guestParties } = buildParties(input.people, input.registrations, guests);
-    const attendees = members.flatMap((p) => p.members.filter((m) => !isGuest(m)));
+    const nightCount = nightCountOf(input);
+    const built = buildParties(input.people, input.registrations, guests);
+    /* With date keys, a member who skips a night has two stays. The demo keeps one bed across a gap. */
+    const members = Array.isArray(input.nights) ? splitStays(built.members, dateBreaks(input.nights)) : built.members;
+    const guestParties = built.guests;
+    const attendees = [...new Set(members.flatMap((p) => p.members.filter((m) => !isGuest(m))))];
     const weights = priorityWeights(attendees, balances, settings.strength);
-    const ctx = { bedById, personById, settings, rng, weights, floorNights: input.floorNights || {}, mode: 'weighted' };
+    /* input.taken[n] lists the beds that hold a stay on night n before the run. The run does not use them. */
+    const takenOn = Array.from({ length: nightCount }, (_, n) => new Set((input.taken && input.taken[n]) || []));
+    const isTaken = (b, n) => takenOn[n].has(b);
+    const ctx = { bedById, personById, settings, rng, weights, floorNights: input.floorNights || {}, mode: 'weighted', nightCount, blocked: isTaken };
     const stages = [];
 
     /* S0: hosts alone. This gives the member floor and no-bed nights without partner guests. */
@@ -535,7 +607,7 @@
     /* S1: members and partner guests, with the member limits from S0. */
     const b1 = weekBlock('w', members, beds, ctx);
     const s1 = solveLP(highs, b1.obj, [...b1.rows, ...limitRows(b1, base, bedById)], b1.bins);
-    if (!isOk(s1)) return { status: s1.Status, parties: members, choices: [], weights, ...emptyResult() };
+    if (!isOk(s1)) return { status: s1.Status, parties: members, choices: [], weights, ...emptyResult(nightCount) };
     let { choices, limits } = readBlock(b1, s1, bedById);
     let objective = s1.ObjectiveValue;
     stages.push('S1');
@@ -545,16 +617,16 @@
      * (couple or host with partner guest) without a queen. The new plan must keep the S1 hard measures.
      */
     /* A move can only help if a better bed is free on some night of the stay. */
-    const usedOn = NIGHTS.map(() => new Set());
+    const usedOn = Array.from({ length: nightCount }, (_, n) => new Set(takenOn[n]));
     members.forEach((p, pi) => {
       for (const n of p.nights) for (const b of choices[pi].beds) usedOn[n].add(b);
     });
     const freeOn = (n, test) => beds.some((b) => !usedOn[n].has(b.id) && test(b));
     const trouble = members.some((p, pi) => {
       const c = choices[pi];
-      if ((p.kind === 'couple' || p.kind === 'hostPartner') && !c.queen) return p.nights.some((n) => freeOn(n, (b) => QUEEN_TYPES.has(b.type)));
+      if ((p.kind === 'couple' || p.kind === 'hostPartner') && !c.queen) return p.nights.some((n) => freeOn(n, (b) => b.queen));
       const onFloor = p.members.some((m) => !isGuest(m) && isFloor(c.assign[m] === undefined ? OVERFLOW : c.assign[m], bedById));
-      return onFloor && p.nights.some((n) => freeOn(n, (b) => !FLOOR_TYPES.has(b.type)));
+      return onFloor && p.nights.some((n) => freeOn(n, (b) => !b.floor));
     });
     const allowMoves = Number(settings.movePenalty) > 0 && trouble;
     if (allowMoves) {
@@ -638,7 +710,7 @@
 
     /* S3: roommate and any-bed guests fill the free beds. Members do not move. */
     if (s3Guests.length) {
-      const used = NIGHTS.map(() => new Set());
+      const used = Array.from({ length: nightCount }, (_, n) => new Set(takenOn[n]));
       parties.forEach((party, pi) => {
         for (const n of party.nights) for (const b of finalChoices[pi].beds) used[n].add(b);
       });
@@ -656,7 +728,7 @@
         let r3 = readBlock(b3, s3, bedById);
         stages.push('S3');
         /* S3m: a guest with no bed may move if a bed is free on some night of the stay. */
-        const taken = NIGHTS.map((_, n) => new Set(used[n]));
+        const taken = used.map((set) => new Set(set));
         s3Guests.forEach((g, i) => {
           for (const n of g.nights) for (const b of r3.choices[i].beds) taken[n].add(b);
         });
@@ -684,11 +756,11 @@
       }
     }
 
-    return { status: 'Optimal', objective, weights, projected, stages, ...finishResult(parties, finalChoices, beds) };
+    return { status: 'Optimal', objective, weights, projected, stages, nights: input.nights || NIGHTS, ...finishResult(parties, finalChoices, beds, nightCount) };
   }
 
-  function emptyResult() {
-    return { assignment: {}, plan: NIGHTS.map(() => ({})), freeBeds: NIGHTS.map(() => []) };
+  function emptyResult(nightCount = NIGHTS.length) {
+    return { assignment: {}, plan: Array.from({ length: nightCount }, () => ({})), freeBeds: Array.from({ length: nightCount }, () => []) };
   }
 
   /*
@@ -696,9 +768,9 @@
    * plan[n] maps a bed id to { partyId, sleepers } on night n.
    * A couple holds its bed on every night of the party, but a member only sleeps there on their own nights.
    */
-  function finishResult(parties, choices, beds) {
+  function finishResult(parties, choices, beds, nightCount = NIGHTS.length) {
     const assignment = {};
-    const plan = NIGHTS.map(() => ({}));
+    const plan = Array.from({ length: nightCount }, () => ({}));
     parties.forEach((party, pi) => {
       const option = choices[pi];
       for (const m of party.members) assignment[m] = option.assign[m] === undefined ? OVERFLOW : option.assign[m];
@@ -711,7 +783,7 @@
         }
       }
     });
-    const freeBeds = NIGHTS.map((_, n) => beds.filter((b) => !plan[n][b.id]).map((b) => b.id));
+    const freeBeds = plan.map((cell) => beds.filter((b) => !cell[b.id]).map((b) => b.id));
     return { parties, choices, assignment, plan, freeBeds };
   }
 
@@ -727,7 +799,7 @@
     const next = { ...balances };
     const nightly = [];
     const valueOf = (bedId) => (bedId === OVERFLOW || bedId === undefined ? 0 : bedById.get(bedId).value);
-    for (let n = 0; n < NIGHTS.length; n++) {
+    for (let n = 0; n < result.plan.length; n++) {
       const rows = [];
       for (const party of result.parties) {
         if (party.kind === 'guest') continue;
@@ -778,6 +850,9 @@
     withGuests,
     DEFAULT_SETTINGS,
     flattenBeds,
+    nightCountOf,
+    dateBreaks,
+    nightRuns,
     buildParties,
     buildOptions,
     priorityWeights,

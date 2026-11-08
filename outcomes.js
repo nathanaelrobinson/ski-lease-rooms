@@ -78,19 +78,19 @@
      * Utilization counts sleeping spaces, not beds. A queen or an air queen has 2 spaces. Other beds have 1.
      * A single in a queen uses 1 of 2 spaces. A held bed with no sleeper uses 0 spaces.
      */
-    const spaces = (bed) => (Model.SHARED_TYPES.has(bed.type) ? 2 : 1);
+    const spaces = (bed) => (bedById.get(bed.id).shared ? 2 : 1);
     const sleepers = (bedId, n) => (result.plan[n][bedId] || { sleepers: [] }).sleepers.length;
     const roomNights = {};
     for (const room of rooms) {
-      roomNights[room.id] = Model.NIGHTS.map((_, n) => ({
+      roomNights[room.id] = result.plan.map((_, n) => ({
         occupied: room.beds.reduce((s, b) => s + sleepers(b.id, n), 0),
         total: room.beds.reduce((s, b) => s + spaces(b), 0),
       }));
     }
 
     /* Bedroom utilization counts only real beds in rooms that are not shared living space. */
-    const bedroomBeds = beds.filter((b) => !b.common && !Model.FLOOR_TYPES.has(b.type));
-    for (let n = 0; n < Model.NIGHTS.length; n++) {
+    const bedroomBeds = beds.filter((b) => !b.common && !b.floor);
+    for (let n = 0; n < result.plan.length; n++) {
       for (const bed of bedroomBeds) {
         counts.bedroomNights += spaces(bed);
         counts.bedroomOccupied += sleepers(bed.id, n);
@@ -98,7 +98,7 @@
     }
 
     /* Members on a floor bed or no bed, for each night. Guests do not count. */
-    const floorOnNight = Model.NIGHTS.map((_, n) =>
+    const floorOnNight = result.plan.map((_, n) =>
       result.parties.flatMap((p, pi) => p.members.filter((m) => !Model.isGuest(m) && p.memberNights[m].includes(n) && Model.isFloor(bedOf(pi, m), bedById))),
     );
 
@@ -110,9 +110,9 @@
      */
     const queenOf = (pi, m) => {
       const b = bedOf(pi, m);
-      return b !== Model.OVERFLOW && Model.QUEEN_TYPES.has(bedById.get(b).type);
+      return b !== Model.OVERFLOW && bedById.get(b).queen;
     };
-    for (let n = 0; n < Model.NIGHTS.length; n++) {
+    for (let n = 0; n < result.plan.length; n++) {
       const pairsWithout = [];
       result.parties.forEach((p, pi) => {
         if (!p.nights.includes(n)) return;
@@ -143,7 +143,7 @@
       }
       const singlesInQueens = [];
       for (const bed of beds) {
-        if (!Model.QUEEN_TYPES.has(bed.type)) continue;
+        if (!bed.queen) continue;
         const cell = result.plan[n][bed.id];
         if (!cell) continue;
         if (cell.sleepers.length === 0) {
@@ -200,7 +200,7 @@
        * For a single, the free bed must not make a room with two genders.
        */
       const better = Model.buildOptions(party, beds).filter(
-        (o) => !o.overflow && !o.alone && o.beds.every((b) => !Model.FLOOR_TYPES.has(bedById.get(b).type)),
+        (o) => !o.overflow && !o.alone && o.beds.every((b) => !bedById.get(b).floor),
       );
       const gender = party.members.length === 1 ? personById.get(party.members[0]).gender : null;
       const free = better.find((o) =>
@@ -237,7 +237,7 @@
     /* Room-nights with singles of two genders. */
     for (const room of rooms) {
       if (room.common || room.beds.length < 2) continue;
-      for (let n = 0; n < Model.NIGHTS.length; n++) {
+      for (let n = 0; n < result.plan.length; n++) {
         const genders = new Set();
         const ids = [];
         for (const bed of room.beds) {
@@ -292,7 +292,8 @@
   function sumOutcomes(list, rooms) {
     const counts = zeroCounts();
     const roomNights = {};
-    for (const room of rooms) roomNights[room.id] = [0, 1, 2].map(() => ({ occupied: 0, total: 0 }));
+    const nightCount = list.reduce((max, o) => Math.max(max, ...Object.values(o.roomNights).map((rn) => rn.length)), 0);
+    for (const room of rooms) roomNights[room.id] = Array.from({ length: nightCount }, () => ({ occupied: 0, total: 0 }));
     for (const o of list) {
       for (const k of COUNT_KEYS) counts[k] += o.counts[k];
       for (const room of rooms) {
